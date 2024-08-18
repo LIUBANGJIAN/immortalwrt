@@ -68,7 +68,7 @@ jobs:
           cd package
           # mkdir openwrt-package
           # cd openwrt-package
-          cd lean
+          # cd lean
           # git clone https://github.com/liubangjain/luci-app-koolproxyR-1.git
           # git clone https://github.com/liubangjian/koolproxyR.git
           # git clone https://github.com/vernesong/OpenClash.git
