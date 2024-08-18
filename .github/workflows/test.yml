@@ -215,12 +215,12 @@ jobs:
           # CONFIG_PACKAGE_luci-app_transmission=n
           #  CONFIG_PACKAGE_luci-app-xlnetacc=n
           #  CONFIG_PACKAGE_luci-app-samba4=n
-          CONFIG_PACKAGE_luci-app-alist=y
-          CONFIG_PACKAGE_luci-app-lucky=y
-          CONFIG_PACKAGE_luci-app-frps=y
-          CONFIG_PACKAGE_luci-app-openclash=y
-          CONFIG_PACKAGE_luci-app-ssr-plus=y
-          CONFIG_PACKAGE_luci-app-passwall=y
+          ######CONFIG_PACKAGE_luci-app-alist=y
+          ####CONFIG_PACKAGE_luci-app-lucky=y
+          #####CONFIG_PACKAGE_luci-app-frps=y
+          #####CONFIG_PACKAGE_luci-app-openclash=y
+          ######CONFIG_PACKAGE_luci-app-ssr-plus=y
+          #####CONFIG_PACKAGE_luci-app-passwall=y
           EOF
           # LuCI主题:
           # #cat >> .config <<EOF
@@ -239,12 +239,12 @@ jobs:
           # CONFIG_PACKAGE_ntfs3-oot=n
           # CONFIG_PACKAGE_mount=n
           # CONFIG_PACKAGE_server_box_monitor=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_open-vm-tools=y
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_iftop=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_pv=y
+          ###CONFIG_PACKAGE_nano=y
+          ###CONFIG_PACKAGE_open-vm-tools=y
+          ####CONFIG_PACKAGE_iperf3=y
+          ####CONFIG_PACKAGE_iftop=y
+          ####CONFIG_PACKAGE_tcpdump=y
+          ####CONFIG_PACKAGE_pv=y
           EOF
           # 取消编译VMware镜像以及镜像填充 (不要删除被缩进的注释符号):
           cat >> .config <<EOF
