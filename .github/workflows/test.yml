@@ -219,8 +219,8 @@ jobs:
           CONFIG_PACKAGE_luci-app-lucky=y
           CONFIG_PACKAGE_luci-app-frps=y
           ##CONFIG_PACKAGE_luci-app-openclash=y
-          ##CONFIG_PACKAGE_luci-app-ssr-plus=y
-          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-ssr-plus=y
+          ##CONFIG_PACKAGE_luci-app-passwall=y
           EOF
           # LuCI主题:
           # #cat >> .config <<EOF
