@@ -247,6 +247,7 @@ jobs:
           CONFIG_PACKAGE_iftop=y
           CONFIG_PACKAGE_tcpdump=y
           CONFIG_PACKAGE_pv=y
+          CONFIG_PACKAGE_uhttpd=y
           EOF
           # 添加中文:
           cat >> .config <<EOF
