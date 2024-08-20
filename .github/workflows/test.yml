@@ -250,6 +250,8 @@ jobs:
           CONFIG_PACKAGE_uhttpd=y
           CONFIG_PACAKGE_luci=y
           CONFIG_PACAKGE_luci-compat=y
+          CONFIG_PACAKGE_luci-i18n-base-zh-cn=y
+
           EOF
           # 添加中文:
           #cat >> .config <<EOF
