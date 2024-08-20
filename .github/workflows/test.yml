@@ -231,12 +231,12 @@ jobs:
           EOF
           # 常用软件包:
           cat >> .config <<EOF
-          # CONFIG_PACKAGE_curl=y
-          # CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_htop=y
           # CONFIG_PACKAGE_screen=y
           # CONFIG_PACKAGE_tree=y
           # CONFIG_PACKAGE_vim-fuller=y
-          # CONFIG_PACKAGE_wget=y
+          CONFIG_PACKAGE_wget=y
           # CONFIG_PACKAGE_tvheadend=y
           # CONFIG_PACKAGE_ntfs3-oot=n
           # CONFIG_PACKAGE_mount=n
@@ -248,6 +248,8 @@ jobs:
           CONFIG_PACKAGE_tcpdump=y
           CONFIG_PACKAGE_pv=y
           CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACAKGE_luci=y
+          CONFIG_PACAKGE_luci-compat=y
           EOF
           # 添加中文:
           #cat >> .config <<EOF
