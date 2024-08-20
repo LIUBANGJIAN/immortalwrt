@@ -100,7 +100,7 @@ jobs:
           sed -i '1i src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
           sed -i '2i src-git small https://github.com/kenzok8/small' feeds.conf.default
           sed -i '3i src-git vmware https://github.com/vmware/open-vm-tools' feeds.conf.default
-          sed -i '4i src-git packages https://github.com/immortalwrt/packages' feeds.conf.default
+          #sed -i '4i src-git packages https://github.com/immortalwrt/packages' feeds.conf.default
           sed -i '5i src-git luci https://github.com/immortalwrt/luci' feeds.conf.default
           ./scripts/feeds update -a && rm -rf feeds/luci/applications/luci-app-mosdns
           rm -rf feeds/packages/net/{alist,adguardhome,xray*,v2ray*,v2ray*,sing*,smartdns}
@@ -250,9 +250,9 @@ jobs:
           CONFIG_PACKAGE_uhttpd=y
           EOF
           # 添加中文:
-          cat >> .config <<EOF
-          CONFIG_LUCI_LANG_zh-Hans=y
-          EOF          
+          #cat >> .config <<EOF
+          #CONFIG_LUCI_LANG_zh-Hans=y
+          #EOF          
           # 取消编译VMware镜像以及镜像填充 (不要删除被缩进的注释符号):
           cat >> .config <<EOF
           # CONFIG_TARGET_IMAGES_GZIP is not set
