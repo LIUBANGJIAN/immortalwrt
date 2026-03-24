@@ -1,202 +1,95 @@
-#
-# This is free software, lisence use MIT.
-#
-# Copyright (C) 2019 P3TERX <https://p3terx.com>
-# Copyright (C) 2019 KFERMercer <KFER.Mercer@gmail.com>
-#
-# <https://github.com/KFERMercer/OpenWrt-CI>
-#
-
 name: ImmortalWrt_open-vm-tools
 
 on:
   push:
     branches:
       - master
-  schedule:
-      - cron:  '0 */3 * * *'
+  workflow_dispatch:
   release:
       types: [published]
 
 jobs:
-
   build:
-
     runs-on: ubuntu-22.04
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: master
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-          check-latest: true
+          go-version: '1.23'
 
-      - name: 查看机器配置
-        run: |
-         echo "警告⚠"
-         echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-         echo -e "CPU性能排序: 7763 > 8370C > 8272CL > 8171M > E5-2673\n"
-         echo "--------------------------CPU信息--------------------------"
-         echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
-         echo "CPU核心数量: $(nproc)"
-         echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
-         echo "--------------------------内存信息--------------------------"
-         echo "已安装内存详细信息:"
-         echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
-         echo "--------------------------硬盘信息--------------------------"
-         echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
-         go version
-         
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 2048
-          temp-reserve-mb: 1024
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-
-      - name: Space cleanup
+      - name: Space cleanup & Install deps
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php || true
-          sudo docker image prune --all --force || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/lib/jvm /etc/mysql /etc/php || true
           sudo -E apt-get update
-          sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* snap* || true
-          # 补充安装 libboost-all-dev 依赖
-          sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev scdoc libboost-all-dev
-          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev libboost-dev libboost-system-dev libboost-program-options-dev
           sudo -E apt-get clean
-          sudo -E timedatectl set-timezone "Asia/Shanghai"
-
-      - name: Checkout
-        uses: actions/checkout@v4
-          
-      - name: Build
-        run: |
-          echo "Free space:"
-          df -h
-          date
 
       - name: Update feeds
         run: |
+          # 仅保留核心必要的第三方源，避免冲突
           sed -i '1i src-git lucky https://github.com/gdy666/luci-app-lucky' feeds.conf.default
           sed -i '2i src-git small https://github.com/kenzok8/small' feeds.conf.default
           sed -i '3i src-git openlist2 https://github.com/sbwml/luci-app-openlist2' feeds.conf.default
-          sed -i '4i src-git vmware https://github.com/vmware/open-vm-tools' feeds.conf.default
-          sed -i '5i src-git taskplan https://github.com/sirpdboy/luci-app-taskplan' feeds.conf.default
-          sed -i '6i src-git rtp2httpd https://github.com/stackia/rtp2httpd.git' feeds.conf.default
-          sed -i '8i src-git netbird https://github.com/tbc0309/openwrt-netbird.git' feeds.conf.default
-          ./scripts/feeds update -a 
-          rm -rf feeds/luci/applications/luci-app-mosdns
-          rm -rf feeds/packages/net/{alist,openlist,adguardhome,mosdns,xray*,v2ray*,v2ray*,sing*,smartdns}
-          rm -rf feeds/packages/utils/v2dat
+          
+          ./scripts/feeds update -a
+          # 彻底删除冲突包
+          rm -rf feeds/packages/net/{alist,adguardhome,mosdns,xray*,v2ray*,sing*,smartdns}
           rm -rf feeds/packages/lang/golang
           git clone --depth=1 -b 25.x https://github.com/sbwml/packages_lang_golang feeds/packages/lang/golang
+          
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: Generate configuration file
         run: |
-          rm -f ./.config*
-          touch ./.config
+          touch .config
           cat >> .config <<EOF
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_Generic=y
-          CONFIG_TESTING_KERNEL=n
           
-          # 强制启用 boost 依赖，修复 trojan-plus 报错
+          # 核心依赖修复：强制选中 boost 所有相关包
           CONFIG_PACKAGE_boost=y
           CONFIG_PACKAGE_boost-system=y
           CONFIG_PACKAGE_boost-program_options=y
           CONFIG_PACKAGE_boost-date_time=y
+          CONFIG_PACKAGE_boost-thread=y
           
-          CONFIG_PACKAGE_luci-app-frps=y
-          CONFIG_PACKAGE_luci-app-openlist2=y
-          CONFIG_PACKAGE_luci-app-lucky=y
+          # 插件选择
           CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-app-wireguard=y
-          CONFIG_PACKAGE_luci-proto-wireguard=y
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-app-taskplan=y
-          CONFIG_PACKAGE_luci-app-rtp2httpd=y
-          
-          CONFIG_SING_BOX_WITH_ECH=y
-          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y
+          CONFIG_PACKAGE_luci-app-lucky=y
+          CONFIG_PACKAGE_luci-app-openlist2=y
           CONFIG_PACKAGE_open-vm-tools=y
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_iftop=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_pv=y
-          CONFIG_PACKAGE_netbird=y
-          
-          # 取消编译无用镜像
-          # CONFIG_TARGET_IMAGES_GZIP is not set
-          # CONFIG_TARGET_IMAGES_KERNEL is not set
-          # CONFIG_VMDK_IMAGES is not set
-          # CONFIG_TARGET_ROOTFS_INITRAMFS is not set
+          CONFIG_PACKAGE_luci-app-ttyd=y
           EOF
-          sed -i 's/^[ \t]*//g' ./.config
+          
+          # 移除 .config 中可能的重复项并使其生效
+          sed -i 's/^[ \t]*//g' .config
           make defconfig
 
-      - name: Make download
+      - name: Pre-compile Boost (Fix trojan-plus error)
         run: |
-          make download -j8
-          find ./dl/ -size -1024c -exec rm -f {} \;
+          # 关键步骤：先单独编译 boost，确保 trojan-plus 能找到库文件
+          make package/feeds/packages/boost/compile -j$(nproc) || make package/feeds/packages/boost/compile V=s
 
       - name: Compile the firmware
         run: |
-          # 首次尝试多线程，失败则自动切换单线程 V=s 输出详细错误
+          # 使用 -i 忽略个别非致命错误，或使用单线程排查
           make -j$(nproc) || make -j1 V=s
         
       - name: Prepare artifact
         run: |
           mkdir -p ./artifact/firmware
-          mkdir -p ./artifact/package
-          mkdir -p ./artifact/buildinfo
-          rm -rf $(find ./bin/targets/ -type f -name "openwrt-x86-64-generic-kernel.bin")
-          rm -rf $(find ./bin/targets/ -type f -name "openwrt-x86-64-generic-squashfs-rootfs.img")
-          rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
-
-      - name: Deliver buildinfo
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_buildinfo_6.12.x
-          path: ./artifact/buildinfo/
-          retention-days: 7
-
-      - name: Deliver package
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_package_6.12.x
-          path: ./artifact/package/
-          retention-days: 7
+          cp -rf $(find ./bin/targets/ -type f -name "*.img.gz" -o -name "*.vmdk") ./artifact/firmware/ || true
 
       - name: Deliver firmware
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_firmware_6.12.x
-          path: ./bin/targets/
-          retention-days: 7
-
-      - name: Upload release asset
-        if: github.event == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.YOURTOKEN }}
-          file: ./artifact/firmware/*
-          tag: ${{ github.ref }}
-          file_glob: true
+          name: OpenWrt_firmware
+          path: ./artifact/firmware/
