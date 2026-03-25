@@ -3,20 +3,11 @@ name: Build ImmortalWrt x86_64
 on:
   repository_dispatch:
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: 'false'
 
 env:
   REPO_URL: https://github.com/LIUBANGJIAN/immortalwrt
   REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   TZ: Asia/Shanghai
 
@@ -51,21 +42,24 @@ jobs:
     - name: Load custom feeds
       run: |
         cd openwrt
+        # 添加你要求的第三方插件库
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small" >> ./feeds.conf.default
         echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2" >> ./feeds.conf.default
+        
+        # 更新并安装 Feeds
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
     - name: Generate Configuration
       run: |
         cd openwrt
-        # 设置目标为 x86_64
+        # 1. 设置 x86_64 目标架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # 注入你要求的软件包
+        # 2. 注入你指定的软件包
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
@@ -73,7 +67,10 @@ jobs:
         echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
         
-        # 补全依赖配置
+        # 3. 强制包含必要的常用内核模块和依赖
+        echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
+        
+        # 4. 补全配置并解决冲突
         make defconfig
 
     - name: Download package
@@ -89,7 +86,8 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        # 首次编译建议先尝试多线程，失败后再单线程输出详细日志
+        make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Check space usage
@@ -98,7 +96,8 @@ jobs:
 
     - name: Upload firmware directory
       uses: actions/upload-artifact@v4
-      if: steps.compile.outputs.status == 'success' && env:UPLOAD_FIRMWARE == 'true'
+      # 修复后的条件判断语法
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
-        name: ImmortalWrt_firmware
+        name: ImmortalWrt_x86_64_Firmware
         path: openwrt/bin/targets/x86/64/
