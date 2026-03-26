@@ -7,7 +7,6 @@ on:
 env:
   REPO_URL: https://github.com/LIUBANGJIAN/immortalwrt
   REPO_BRANCH: master
-  CONFIG_FILE: .config
   UPLOAD_FIRMWARE: true
   TZ: Asia/Shanghai
 
@@ -25,7 +24,8 @@ jobs:
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(curl -fsSL https://is.gd/depends_ubuntu_2204)
+        # 使用更稳定的依赖安装命令，不再依赖失效的短链接
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgpgme11-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
@@ -42,24 +42,22 @@ jobs:
     - name: Load custom feeds
       run: |
         cd openwrt
-        # 添加你要求的第三方插件库
-        echo "src-git lucky https://github.com/gdy666/luci-app-lucky" >> ./feeds.conf.default
-        echo "src-git small https://github.com/kenzok8/small" >> ./feeds.conf.default
-        echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2" >> ./feeds.conf.default
-        
-        # 更新并安装 Feeds
+        # 修复 lucky 库地址并添加其他库
+        echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
+        echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
+        echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2.git" >> ./feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
     - name: Generate Configuration
       run: |
         cd openwrt
-        # 1. 设置 x86_64 目标架构
+        # 基础架构设置
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # 2. 注入你指定的软件包
+        # 软件包选择
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
@@ -67,14 +65,10 @@ jobs:
         echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
         
-        # 3. 强制包含必要的常用内核模块和依赖
-        echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
-        
-        # 4. 补全配置并解决冲突
+        # 自动补全依赖
         make defconfig
 
     - name: Download package
-      id: package
       run: |
         cd openwrt
         make download -j8
@@ -86,18 +80,12 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 首次编译建议先尝试多线程，失败后再单线程输出详细日志
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
-
     - name: Upload firmware directory
       uses: actions/upload-artifact@v4
-      # 修复后的条件判断语法
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
-        name: ImmortalWrt_x86_64_Firmware
+        name: ImmortalWrt_x86_64
         path: openwrt/bin/targets/x86/64/
