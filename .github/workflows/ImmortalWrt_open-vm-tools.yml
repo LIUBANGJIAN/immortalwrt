@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_x86_Safe
+name: Build_ImmortalWrt_x86_Optimized
 
 on:
   workflow_dispatch:
@@ -11,27 +11,34 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Free Disk Space & Install Deps
+    - name: Space Cleanup & Dependencies (Ref LEDE)
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        # 1. 深度清理无用大文件
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/az /usr/share/swift /usr/lib/jvm /usr/local/stack /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver
+        # 参考 LEDE 脚本的极致清理，腾出约 35GB+ 空间
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc || true
         
-        # 2. 安装编译依赖
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgpgme11-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get update
+        # 合并了 LEDE 脚本中的增强型依赖包
+        sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
         df -h
 
-    - name: Clone and Update Feeds
+    - name: Clone Source & Add Feeds
       run: |
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         cd openwrt
-        # 添加插件源
+        # 注入你的三方库
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2.git" >> ./feeds.conf.default
@@ -42,12 +49,12 @@ jobs:
     - name: Generate Config
       run: |
         cd openwrt
-        # 写入架构
+        # 基础 x86_64 架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # 写入指定插件
+        # 软件包配置
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
@@ -55,24 +62,34 @@ jobs:
         echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
         
+        # 极致瘦身配置：禁用所有 Debug 信息，这能减少几 GB 的中间文件体积
+        echo "CONFIG_DEBUG_INFO=n" >> .config
+        echo "CONFIG_KERNEL_GDB_SCRIPTS=n" >> .config
+        
         make defconfig
-        # 预下载源码，防止编译时下载失败
         make download -j8
+        # 清理无用下载包
         find dl -size -1024c -exec rm -f {} \;
 
     - name: Build Firmware
       id: compile
       run: |
         cd openwrt
-        # 优先使用 2 核心编译，平衡速度与稳定性
+        # 限制线程数为 2，防止内存与磁盘瞬间溢出（x86 编译 Rust 的痛点）
         make -j2 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload Artifact
+    - name: Organize Artifacts
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd openwrt/bin/targets/x86/64/
+        # 只保留固件文件，删除所有中间件（ipk 等），腾出空间给上传步骤
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+
+    - name: Upload Firmware
       uses: actions/upload-artifact@v4
       if: steps.compile.outputs.status == 'success'
       with:
-        name: ImmortalWrt_x86_64
-        path: |
-          openwrt/bin/targets/x86/64/*.img.gz
-          openwrt/bin/targets/x86/64/*.iso
+        name: ImmortalWrt_x86_64_Final
+        path: ${{ env.FIRMWARE }}/*
