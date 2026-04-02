@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_x86_Full_Release
+name: Build_ImmortalWrt_x86_Dual_Firmware
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write # 必须：允许创建 Release
+      contents: write
 
     steps:
     - name: Checkout
@@ -49,7 +49,7 @@ jobs:
         echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
         
-        # 空间优化与格式锁定
+        # 核心优化配置
         echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_EXT4FS=n" >> .config
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
@@ -71,47 +71,37 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
         echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
-    - name: Organize Artifacts (关键修复步骤)
+    - name: Organize Artifacts (双固件提取)
       if: steps.compile.outputs.status == 'success'
-      id: organize
       run: |
-        # 进入编译输出目录
         cd openwrt/bin/targets/x86/64/
-        # 创建上传专用文件夹
-        mkdir -p /tmp/upload_dir
+        mkdir -p /tmp/artifact/
         
-        # 打印当前目录下的所有文件，用于在日志中排查问题
-        echo "Files in target directory:"
-        ls -lh
+        # 1. 提取并重命名 EFI 固件
+        cp *squashfs-combined-efi.img.gz /tmp/artifact/immortalwrt-x86-64-combined-efi.img.gz || true
         
-        # 匹配 combined-efi.img.gz 固件
-        # 注意：ImmortalWrt 的文件名可能包含 generic 或 squashfs 等字样
-        cp *combined-efi.img.gz /tmp/upload_dir/immortalwrt-x86-64-combined-efi.img.gz || echo "Combined-EFI not found"
+        # 2. 提取并重命名 Legacy (非EFI) 固件
+        # 注意：这里使用了排除 efi 的匹配方式，确保精准命中
+        cp *squashfs-combined.img.gz /tmp/artifact/immortalwrt-x86-64-combined-legacy.img.gz || true
         
-        # 检查文件夹是否为空
-        if [ "$(ls -A /tmp/upload_dir)" ]; then
-           echo "FOUND_FILES=true" >> $GITHUB_ENV
-           echo "Files ready for upload:"
-           ls -l /tmp/upload_dir
-        else
-           echo "ERROR: No firmware found to upload!"
-           exit 1
-        fi
+        # 3. 提取编译配置
+        cp .config /tmp/artifact/config.buildinfo || true
+        
+        echo "FIRMWARE_PATH=/tmp/artifact" >> $GITHUB_ENV
 
-    - name: Upload Artifacts (临时附件)
+    - name: Deliver Artifacts (临时附件)
       uses: actions/upload-artifact@v4
-      if: env.FOUND_FILES == 'true'
+      if: steps.compile.outputs.status == 'success'
       with:
-        name: ImmortalWrt_x86_64_EFI
-        path: /tmp/upload_dir/*
-        if-no-files-found: error # 如果没找到文件直接让任务变红
+        name: ImmortalWrt_x86_64_Firmware
+        path: ${{ env.FIRMWARE_PATH }}/*
 
-    - name: Upload to Release (参考LEDE发布策略)
+    - name: Upload to Release (正式发布)
       uses: svenstaro/upload-release-action@v2
-      if: env.FOUND_FILES == 'true'
+      if: steps.compile.outputs.status == 'success'
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: /tmp/upload_dir/*
+        file: ${{ env.FIRMWARE_PATH }}/*
         tag: Latest-Release
         release_name: "ImmortalWrt-x86-64 [${{ steps.compile.outputs.release_tag }}]"
         overwrite: true
@@ -119,7 +109,7 @@ jobs:
 
     - name: Remove Old Releases
       uses: dev-drprasad/delete-older-releases@v0.3.3
-      if: env.FOUND_FILES == 'true'
+      if: steps.compile.outputs.status == 'success'
       with:
         keep_latest: 3
         delete_tags: true
