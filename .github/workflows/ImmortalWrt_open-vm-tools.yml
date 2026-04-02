@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_x86_Success_V5
+name: Build_ImmortalWrt_x86_Full_Release
 
 on:
   workflow_dispatch:
@@ -11,19 +11,20 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write # 必须：允许创建 Release
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Extreme Space Cleanup (The Real One)
+    - name: Extreme Space Cleanup
       run: |
-        # 释放所有可能的空间，确保有 35GB+ 可用
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver /opt/microsoft/powershell /opt/pipx /usr/share/azure-cli /opt/az /usr/lib/google-cloud-sdk
         sudo -E apt-get update
         sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
-        df -h
 
     - name: Clone and Update
       run: |
@@ -48,14 +49,13 @@ jobs:
         echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
         
-        # --- 救命的配置：强制镜像瘦身 ---
+        # 空间优化与格式锁定
         echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_EXT4FS=n" >> .config # 彻底关掉 ext4 镜像生成
+        echo "CONFIG_TARGET_ROOTFS_EXT4FS=n" >> .config
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=160" >> .config # 限制分区到 160MB，防止产生巨大的空洞文件
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=160" >> .config
         echo "CONFIG_VMDK_IMAGES=n" >> .config
         echo "CONFIG_DEBUG_INFO=n" >> .config
-        # ---------------------------
         
         make defconfig
         make download -j8
@@ -65,27 +65,63 @@ jobs:
       id: compile
       run: |
         cd openwrt
-        # 第一步：先编译核心工具链，并立刻清理中间件
         make tools/install -j$(nproc) || make tools/install -j1 V=s
         make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
-        
-        # 第二步：正式编译
         make -j2 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
+        echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
-    - name: Organize Artifacts
+    - name: Organize Artifacts (关键修复步骤)
       if: steps.compile.outputs.status == 'success'
+      id: organize
       run: |
+        # 进入编译输出目录
         cd openwrt/bin/targets/x86/64/
-        rm -rf packages
-        # 只要 combined-efi.img.gz
-        mkdir -p /tmp/upload
-        cp *combined-efi.img.gz /tmp/upload/immortalwrt-x86-64-combined-efi.img.gz || true
-        echo "FIRMWARE=/tmp/upload" >> $GITHUB_ENV
+        # 创建上传专用文件夹
+        mkdir -p /tmp/upload_dir
+        
+        # 打印当前目录下的所有文件，用于在日志中排查问题
+        echo "Files in target directory:"
+        ls -lh
+        
+        # 匹配 combined-efi.img.gz 固件
+        # 注意：ImmortalWrt 的文件名可能包含 generic 或 squashfs 等字样
+        cp *combined-efi.img.gz /tmp/upload_dir/immortalwrt-x86-64-combined-efi.img.gz || echo "Combined-EFI not found"
+        
+        # 检查文件夹是否为空
+        if [ "$(ls -A /tmp/upload_dir)" ]; then
+           echo "FOUND_FILES=true" >> $GITHUB_ENV
+           echo "Files ready for upload:"
+           ls -l /tmp/upload_dir
+        else
+           echo "ERROR: No firmware found to upload!"
+           exit 1
+        fi
 
-    - name: Upload Artifact
+    - name: Upload Artifacts (临时附件)
       uses: actions/upload-artifact@v4
-      if: steps.compile.outputs.status == 'success'
+      if: env.FOUND_FILES == 'true'
       with:
-        name: ImmortalWrt_Success_Fixed
-        path: ${{ env.FIRMWARE }}/*
+        name: ImmortalWrt_x86_64_EFI
+        path: /tmp/upload_dir/*
+        if-no-files-found: error # 如果没找到文件直接让任务变红
+
+    - name: Upload to Release (参考LEDE发布策略)
+      uses: svenstaro/upload-release-action@v2
+      if: env.FOUND_FILES == 'true'
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: /tmp/upload_dir/*
+        tag: Latest-Release
+        release_name: "ImmortalWrt-x86-64 [${{ steps.compile.outputs.release_tag }}]"
+        overwrite: true
+        file_glob: true
+
+    - name: Remove Old Releases
+      uses: dev-drprasad/delete-older-releases@v0.3.3
+      if: env.FOUND_FILES == 'true'
+      with:
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
