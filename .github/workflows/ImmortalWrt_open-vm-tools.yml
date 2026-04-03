@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_Universal_v2
+name: Build_ImmortalWrt_Official_Stable_Final_V3
 
 on:
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # --- 物理机+虚拟机全量驱动 (你列出的核心包) ---
+        # --- 物理机+虚拟机全量驱动 ---
         for pkg in autocore automount block-mount fdisk grub2-bios-setup fstools kmod-fs-f2fs kmod-fs-vfat mkf2fs partx-utils \
         kmod-8139cp kmod-8139too kmod-e1000 kmod-e1000e kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-r8101 \
         kmod-r8125 kmod-r8126 kmod-r8168 kmod-tg3 kmod-bnx2 kmod-forcedeth kmod-amazon-ena kmod-amd-xgbe kmod-dwmac-intel \
@@ -69,10 +69,21 @@ jobs:
           echo "CONFIG_PACKAGE_$pkg=y" >> .config
         done
 
-        # --- 核心 Web 与 插件 ---
+        # --- 核心插件与补全 (针对你缺失的插件) ---
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
         echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+        
+        # 补全你要求的缺失插件
+        echo "CONFIG_PACKAGE_luci-proto-wireguard=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-wireguard=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-taskplan=y" >> .config
+        echo "CONFIG_PACKAGE_iperf3=y" >> .config
+        echo "CONFIG_PACKAGE_iftop=y" >> .config
+        echo "CONFIG_PACKAGE_tcpdump=y" >> .config
+        echo "CONFIG_PACKAGE_pv=y" >> .config
+        
+        # 原有插件
         echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-nlbwmon=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
@@ -81,6 +92,7 @@ jobs:
         echo "CONFIG_PACKAGE_netbird=y" >> .config
         
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=600" >> .config
+        
         make defconfig
         make download -j8
 
@@ -90,29 +102,28 @@ jobs:
         cd openwrt
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
+        echo "COMPILE_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
     - name: Organize & Rename Artifacts
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
-        # 获取纯净版本号
         V_TAG=$(echo ${{ env.TARGET_BRANCH }} | sed 's/openwrt-//')
-        # 准备 Release Notes
-        echo "编译版本: $V_TAG" > ../release_body.txt
-        echo "包含 LuCI 插件:" >> ../release_body.txt
-        grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> ../release_body.txt
+        # 架构信息硬编码为 x86-64
+        ARCH="x86_64"
         
-        # 精准定位输出文件夹并重命名
+        # 1. 提取插件信息
+        echo "FIRMWARE_VERSION=$V_TAG" >> $GITHUB_ENV
+        echo "PLUGINS_LIST<<EOF" >> $GITHUB_ENV
+        grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> $GITHUB_ENV
+        grep "CONFIG_PACKAGE_iperf3\|CONFIG_PACKAGE_iftop\|CONFIG_PACKAGE_tcpdump" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+        
+        # 2. 精准定位输出并重命名 (格式: 架构-版本-类型)
         F_PATH="bin/targets/x86/64"
         mkdir -p /tmp/upload/
-        find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-${V_TAG}-efi.img.gz \;
-        find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-${V_TAG}-legacy.img.gz \;
-        
-        # 检查是否成功复制
-        if [ -z "$(ls -A /tmp/upload/)" ]; then
-          echo "Error: 固件未找到，请检查 bin 目录结构"
-          exit 1
-        fi
+        find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-${ARCH}-${V_TAG}-efi.img.gz \;
+        find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-${ARCH}-${V_TAG}-legacy.img.gz \;
 
     - name: Remove Old Releases
       uses: dev-drprasad/delete-older-releases@v0.3.3
@@ -128,9 +139,14 @@ jobs:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
         tag: Latest-Release
-        release_name: "ImmortalWrt ${{ env.TARGET_BRANCH }} [$(date +'%Y-%m-%d')]"
+        release_name: "ImmortalWrt-x86_64-${{ env.FIRMWARE_VERSION }}"
         body: |
-          编译完成！基于分支: ${{ env.TARGET_BRANCH }}
-          $(cat release_body.txt)
+          ### 编译详情
+          - **架构**: x86_64
+          - **分支**: ${{ env.TARGET_BRANCH }}
+          - **时间**: ${{ env.COMPILE_TIME }}
+          
+          ### 已集成插件:
+          ${{ env.PLUGINS_LIST }}
         overwrite: true
         file_glob: true
