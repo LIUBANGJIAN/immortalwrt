@@ -1,18 +1,17 @@
-name: Build_ImmortalWrt_x86_Ultimate_With_Web
+name: Build_ImmortalWrt_Latest_Stable_Full_CN
 
 on:
-  workflow_dispatch: # 手动触发编译
+  workflow_dispatch:
 
 env:
-  REPO_URL: https://github.com/LIUBANGJIAN/immortalwrt
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
   TZ: Asia/Shanghai
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write # 赋予 Release 写入权限
+      contents: write
 
     steps:
     - name: Checkout
@@ -26,69 +25,82 @@ jobs:
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
 
-    - name: Clone and Update Feeds
+    - name: Clone Source & Auto Switch to Latest Stable
       run: |
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        # 自动获取最新的正式发行版 Tag (例如 v23.05.3)
+        LATEST_TAG=$(curl -s https://api.github.com/repos/immortalwrt/immortalwrt/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Detected Latest Stable Tag: $LATEST_TAG"
+        # 转换为分支名 (例如 openwrt-23.05)
+        STABLE_BRANCH="openwrt-${LATEST_TAG%.*}"
+        echo "Switching to Branch: $STABLE_BRANCH"
+        git clone $REPO_URL -b $STABLE_BRANCH openwrt
+        echo "STABLE_VERSION=$LATEST_TAG" >> $GITHUB_ENV
+
+    - name: Update Feeds & Add Custom Repos
+      run: |
         cd openwrt
-        # 添加第三方源
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2.git" >> ./feeds.conf.default
         echo "src-git netbird https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" >> ./feeds.conf.default
         echo "src-git taskplan https://github.com/sirpdboy/luci-app-taskplan.git" >> ./feeds.conf.default
-        
         ./scripts/feeds update -a
         ./scripts/feeds install -a -f
+
+    - name: Custom System Settings (Timezone & Web)
+      run: |
+        cd openwrt
+        # 1. 设置默认时区为上海
+        sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
+        sed -i '/timezone/d' package/base-files/files/bin/config_generate
+        sed -i '/set system.@system\[0\].hostname/a \ \ \ \ \ \ \ \ set system.@system[0].timezone='\''CST-8'\''' package/base-files/files/bin/config_generate
+        sed -i '/set system.@system\[0\].timezone/a \ \ \ \ \ \ \ \ set system.@system[0].zonename='\''Asia/Shanghai'\''' package/base-files/files/bin/config_generate
+        
+        # 2. 修正 Web 自动跳转 (尝试增加 uhttpd 强制)
+        sed -i 's/option redirect_https .*/option redirect_https 0/g' package/network/services/uhttpd/files/uhttpd.config || true
 
     - name: Generate Config
       run: |
         cd openwrt
-        # 基础架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # --- 核心：强制开启 LuCI Web 界面 ---
+        # --- 核心：LuCI & 中文 ---
         echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_luci-base=y" >> .config
-        echo "CONFIG_PACKAGE_luci-mod-admin-full=y" >> .config
-        echo "CONFIG_PACKAGE_luci-theme-bootstrap=y" >> .config
-        echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+        echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
         
-        # --- 插件集成 ---
+        # --- 你的新插件需求 ---
+        echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-filetransfer-zh-cn=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-nlbwmon=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn=y" >> .config
+        
+        # --- 之前的所有插件 ---
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-openlist2=y" >> .config
-        echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-        echo "CONFIG_PACKAGE_luci-proto-wireguard=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-wireguard=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-frps=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-netdata=y" >> .config
-        echo "CONFIG_PACKAGE_netbird=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-taskplan=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-rtp2httpd=y" >> .config
-        
-        # --- 网络工具 ---
+        echo "CONFIG_PACKAGE_netbird=y" >> .config
         echo "CONFIG_PACKAGE_iperf3=y" >> .config
         echo "CONFIG_PACKAGE_iftop=y" >> .config
-        echo "CONFIG_PACKAGE_tcpdump=y" >> .config
-        echo "CONFIG_PACKAGE_pv=y" >> .config
         
-        # --- 固件定制 ---
+        # 中文包补全 (确保所有app都有中文)
+        echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+
+        # 分区与镜像
         echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_EXT4FS=n" >> .config
-        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=300" >> .config # 插件极多，上调至300M保证稳定
-        echo "CONFIG_VMDK_IMAGES=n" >> .config
-        echo "CONFIG_DEBUG_INFO=n" >> .config
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=400" >> .config
         
         make defconfig
         make download -j8
-        find dl -size -1024c -exec rm -f {} \;
 
     - name: Build Firmware
       id: compile
@@ -96,8 +108,7 @@ jobs:
         cd openwrt
         make tools/install -j$(nproc) || make tools/install -j1 V=s
         make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
-        # Netdata和Go插件较多，建议-j2编译
-        make -j2 || make -j1 V=s
+        make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
@@ -106,25 +117,9 @@ jobs:
       run: |
         cd openwrt/bin/targets/x86/64/
         mkdir -p /tmp/artifact/
-        # 精准拷贝并命名 EFI 版本
-        cp *squashfs-combined-efi.img.gz /tmp/artifact/immortalwrt-x86-64-combined-efi.img.gz || true
-        # 精准拷贝并命名 Legacy 版本
-        cp *squashfs-combined.img.gz /tmp/artifact/immortalwrt-x86-64-combined-legacy.img.gz || true
-        # 修正：如果上面两步拷贝了同一个文件（某些源码命名规则不同），清理冗余
-        cd /tmp/artifact/
-        [ -f immortalwrt-x86-64-combined-legacy.img.gz ] && [ -f immortalwrt-x86-64-combined-efi.img.gz ] && \
-        cmp -s immortalwrt-x86-64-combined-legacy.img.gz immortalwrt-x86-64-combined-efi.img.gz && \
-        rm -f immortalwrt-x86-64-combined-legacy.img.gz || true
-        
-        cp .config /tmp/artifact/config.buildinfo || true
+        cp *squashfs-combined-efi.img.gz /tmp/artifact/immortalwrt-stable-efi.img.gz || true
+        cp *squashfs-combined.img.gz /tmp/artifact/immortalwrt-stable-legacy.img.gz || true
         echo "FIRMWARE_PATH=/tmp/artifact" >> $GITHUB_ENV
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      if: steps.compile.outputs.status == 'success'
-      with:
-        name: ImmortalWrt_Ultimate_x86_64
-        path: ${{ env.FIRMWARE_PATH }}/*
 
     - name: Upload to Release
       uses: svenstaro/upload-release-action@v2
@@ -133,15 +128,6 @@ jobs:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: ${{ env.FIRMWARE_PATH }}/*
         tag: Latest-Release
-        release_name: "ImmortalWrt-Ultimate [${{ steps.compile.outputs.release_tag }}]"
+        release_name: "ImmortalWrt Stable [${{ env.STABLE_VERSION }}]"
         overwrite: true
         file_glob: true
-
-    - name: Remove Old Releases
-      uses: dev-drprasad/delete-older-releases@v0.3.3
-      if: steps.compile.outputs.status == 'success'
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
