@@ -1,16 +1,15 @@
-name: Build_ImmortalWrt_Custom_Final
+name: Build_ImmortalWrt_Universal_v2
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: '选择编译分支 (例如 openwrt-24.10)'
+        description: '选择编译分支 (如 openwrt-24.10)'
         required: true
         default: 'openwrt-24.10'
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # 这里可以根据输入动态调整，也可以手动改下面这行
   TARGET_BRANCH: ${{ github.event.inputs.branch }}
   TZ: Asia/Shanghai
 
@@ -33,9 +32,7 @@ jobs:
         sudo -E apt-get -qq clean
 
     - name: Clone Source
-      run: |
-        echo "正在拉取分支: ${{ env.TARGET_BRANCH }}"
-        git clone $REPO_URL -b ${{ env.TARGET_BRANCH }} openwrt
+      run: git clone $REPO_URL -b ${{ env.TARGET_BRANCH }} openwrt
 
     - name: Update Feeds
       run: |
@@ -48,64 +45,42 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a -f
 
-    - name: Custom Settings (Timezone & Web)
+    - name: Custom Settings (Timezone & Language)
       run: |
         cd openwrt
-        # 设置上海时区
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
         sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
         sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
-        # 强制默认中文
-        sed -i 's/auto/zh_cn/g' feeds/luci/modules/luci-base/root/etc/config/luci || true
 
     - name: Generate Config
       run: |
         cd openwrt
-        # 基础架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # --- 核心初始化与物理机/虚拟机驱动包 ---
-        # 磁盘挂载与引导
-        for pkg in autocore automount block-mount fdisk grub2-bios-setup fstools kmod-fs-f2fs kmod-fs-vfat mkf2fs partx-utils; do
+        # --- 物理机+虚拟机全量驱动 (你列出的核心包) ---
+        for pkg in autocore automount block-mount fdisk grub2-bios-setup fstools kmod-fs-f2fs kmod-fs-vfat mkf2fs partx-utils \
+        kmod-8139cp kmod-8139too kmod-e1000 kmod-e1000e kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-r8101 \
+        kmod-r8125 kmod-r8126 kmod-r8168 kmod-tg3 kmod-bnx2 kmod-forcedeth kmod-amazon-ena kmod-amd-xgbe kmod-dwmac-intel \
+        i915-firmware-dmc kmod-drm-i915 kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 \
+        kmod-usb-net-rtl8152-vendor kmod-usb-hid kmod-vmxnet3 kmod-pcnet32 open-vm-tools kmod-ata-piix \
+        kmod-scsi-core kmod-mptfusion kmod-mptspi kmod-mpt2sas kmod-mpt3sas; do
           echo "CONFIG_PACKAGE_$pkg=y" >> .config
         done
-        
-        # 物理机常用网卡驱动 (Realtek, Intel, 万兆等)
-        for drv in kmod-8139cp kmod-8139too kmod-e1000 kmod-e1000e kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-r8101 kmod-r8125 kmod-r8126 kmod-r8168 kmod-tg3 kmod-bnx2 kmod-forcedeth kmod-amazon-ena kmod-amd-xgbe kmod-dwmac-intel; do
-          echo "CONFIG_PACKAGE_$drv=y" >> .config
-        done
 
-        # 显卡固件与USB网络
-        for extra in i915-firmware-dmc kmod-drm-i915 kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-usb-hid; do
-          echo "CONFIG_PACKAGE_$extra=y" >> .config
-        done
-
-        # 虚拟机驱动补丁 (关键)
-        echo "CONFIG_PACKAGE_kmod-vmxnet3=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-pcnet32=y" >> .config
-        echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-ata-piix=y" >> .config
-
-        # --- LuCI 界面与中文 ---
+        # --- 核心 Web 与 插件 ---
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
         echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-        
-        # --- 你指定的插件 ---
         echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-nlbwmon=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-taskplan=y" >> .config
         echo "CONFIG_PACKAGE_netbird=y" >> .config
         
-        # --- 固件细节 ---
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=600" >> .config
-        echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
-        
         make defconfig
         make download -j8
 
@@ -116,39 +91,46 @@ jobs:
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Organize & Rename
+    - name: Organize & Rename Artifacts
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
-        # 制作 Release 说明
-        echo "### 固件版本: ${{ env.TARGET_BRANCH }}" > ../release_notes.md
-        echo "#### 已集成物理机+虚拟机全量驱动，支持 ESXi, PVE 及各种工控机。" >> ../release_notes.md
-        echo "#### 包含插件：" >> ../release_notes.md
-        grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> ../release_notes.md
+        # 获取纯净版本号
+        V_TAG=$(echo ${{ env.TARGET_BRANCH }} | sed 's/openwrt-//')
+        # 准备 Release Notes
+        echo "编译版本: $V_TAG" > ../release_body.txt
+        echo "包含 LuCI 插件:" >> ../release_body.txt
+        grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> ../release_body.txt
         
-        # 文件重命名
-        VERSION_TAG=$(echo ${{ env.TARGET_BRANCH }} | sed 's/openwrt-//')
-        cd bin/targets/x86/64/
+        # 精准定位输出文件夹并重命名
+        F_PATH="bin/targets/x86/64"
         mkdir -p /tmp/upload/
-        cp *combined-efi.img.gz /tmp/upload/immortalwrt-${VERSION_TAG}-x86-64-efi.img.gz || true
-        cp *combined.img.gz /tmp/upload/immortalwrt-${VERSION_TAG}-x86-64-legacy.img.gz || true
-        echo "FIRMWARE_PATH=/tmp/upload" >> $GITHUB_ENV
+        find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-${V_TAG}-efi.img.gz \;
+        find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-${V_TAG}-legacy.img.gz \;
+        
+        # 检查是否成功复制
+        if [ -z "$(ls -A /tmp/upload/)" ]; then
+          echo "Error: 固件未找到，请检查 bin 目录结构"
+          exit 1
+        fi
 
-    - name: Remove Old & Upload Release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: ${{ env.FIRMWARE_PATH }}/*
-        tag: Latest-Release
-        release_name: "ImmortalWrt ${{ env.TARGET_BRANCH }} [$(date +'%Y-%m-%d')]"
-        body_path: release_notes.md
-        overwrite: true
-        file_glob: true
-
-    - name: Delete Old Releases
+    - name: Remove Old Releases
       uses: dev-drprasad/delete-older-releases@v0.3.3
       with:
         keep_latest: 0
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload to Release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: /tmp/upload/*
+        tag: Latest-Release
+        release_name: "ImmortalWrt ${{ env.TARGET_BRANCH }} [$(date +'%Y-%m-%d')]"
+        body: |
+          编译完成！基于分支: ${{ env.TARGET_BRANCH }}
+          $(cat release_body.txt)
+        overwrite: true
+        file_glob: true
