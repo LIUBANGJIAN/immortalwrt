@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_Latest_Stable_Official
+name: Build_ImmortalWrt_Official_Stable_Final
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Extreme Space Cleanup
+    - name: Space Cleanup
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver /opt/microsoft/powershell /opt/pipx /usr/share/azure-cli /opt/az /usr/lib/google-cloud-sdk
         sudo -E apt-get update
@@ -25,31 +25,24 @@ jobs:
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
 
-    - name: Clone Latest Official Stable Branch
+    - name: Clone Latest Stable Branch
       run: |
-        # 强制从 Git 远程分支列表中提取版本号最高的 openwrt-xx.xx 分支
-        # 逻辑：获取远程引用 -> 过滤 openwrt- 分支 -> 排序 -> 取最后一个
+        # 强制抓取最新的正式稳定分支
         STABLE_BRANCH=$(git ls-remote --heads $REPO_URL | grep 'refs/heads/openwrt-' | sed 's|.*/||' | sort -V | tail -n 1)
-        
-        if [ -z "$STABLE_BRANCH" ]; then
-          echo "Error: Could not detect any stable branch from $REPO_URL"
-          exit 1
-        fi
-        
-        echo "Successfully detected latest stable branch: $STABLE_BRANCH"
+        echo "Detected Stable Branch: $STABLE_BRANCH"
         git clone $REPO_URL -b $STABLE_BRANCH openwrt
         echo "STABLE_VERSION=$STABLE_BRANCH" >> $GITHUB_ENV
 
-    - name: Update Feeds & Custom Settings
+    - name: Update Feeds & Custom Logic
       run: |
         cd openwrt
-        # 1. 强制时区为亚洲上海
+        # 设置上海时区
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
         sed -i '/timezone/d' package/base-files/files/bin/config_generate
         sed -i '/set system.@system\[0\].hostname/a \ \ \ \ \ \ \ \ set system.@system[0].timezone='\''CST-8'\''' package/base-files/files/bin/config_generate
         sed -i '/set system.@system\[0\].timezone/a \ \ \ \ \ \ \ \ set system.@system[0].zonename='\''Asia/Shanghai'\''' package/base-files/files/bin/config_generate
         
-        # 2. 添加第三方插件源
+        # 添加外部插件源
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git openlist2 https://github.com/sbwml/luci-app-openlist2.git" >> ./feeds.conf.default
@@ -67,18 +60,21 @@ jobs:
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # --- 基础 Web 与 中文支持 ---
+        # LuCI 与 中文
         echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_luci-base=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
-        echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
         echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
         
-        # --- 插件集成 (带中文包) ---
+        # ESXi 必备驱动 (解决 root@(none) 挂载失败)
+        echo "CONFIG_PACKAGE_kmod-vmxnet3=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-ata-piix=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-scsi-core=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-mptfusion=y" >> .config
+        echo "CONFIG_PACKAGE_open-vm-tools=y" >> .config
+        
+        # 插件列表
         echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-filetransfer-zh-cn=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-nlbwmon=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-openlist2=y" >> .config
@@ -90,16 +86,13 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-rtp2httpd=y" >> .config
         echo "CONFIG_PACKAGE_netbird=y" >> .config
         
-        # --- 网络工具 ---
+        # 网络工具
         echo "CONFIG_PACKAGE_iperf3=y" >> .config
         echo "CONFIG_PACKAGE_iftop=y" >> .config
         echo "CONFIG_PACKAGE_tcpdump=y" >> .config
-        echo "CONFIG_PACKAGE_pv=y" >> .config
         
-        # --- 固件打包设置 ---
-        echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=400" >> .config
+        # 镜像设置
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
         
         make defconfig
         make download -j8
@@ -108,38 +101,44 @@ jobs:
       id: compile
       run: |
         cd openwrt
-        make tools/install -j$(nproc) || make tools/install -j1 V=s
-        make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
-        make -j2 || make -j1 V=s
+        make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
-    - name: Organize Artifacts
+    - name: Organize Artifacts & Generate Release Notes
       if: steps.compile.outputs.status == 'success'
       run: |
-        cd openwrt/bin/targets/x86/64/
-        mkdir -p /tmp/artifact/
-        cp *squashfs-combined-efi.img.gz /tmp/artifact/immortalwrt-official-efi.img.gz || true
-        cp *squashfs-combined.img.gz /tmp/artifact/immortalwrt-official-legacy.img.gz || true
-        cp .config /tmp/artifact/config.buildinfo || true
-        echo "FIRMWARE_PATH=/tmp/artifact" >> $GITHUB_ENV
+        cd openwrt
+        # 1. 提取插件信息生成 Release Notes
+        echo "### 编译包含的 LuCI 插件：" > ../release_notes.md
+        grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> ../release_notes.md
+        
+        # 2. 准备文件并添加版本号重命名
+        cd bin/targets/x86/64/
+        mkdir -p /tmp/upload/
+        VERSION_STR=$(echo ${{ env.STABLE_VERSION }} | sed 's/openwrt-//')
+        
+        # 重命名 EFI 文件
+        cp *combined-efi.img.gz /tmp/upload/immortalwrt-${VERSION_STR}-x86-64-combined-efi.img.gz || true
+        # 重命名 Legacy 文件
+        cp *combined.img.gz /tmp/upload/immortalwrt-${VERSION_STR}-x86-64-combined-legacy.img.gz || true
+        
+        echo "FIRMWARE_PATH=/tmp/upload" >> $GITHUB_ENV
+
+    - name: Remove old Releases (彻底删除旧版)
+      uses: dev-drprasad/delete-older-releases@v0.3.3
+      with:
+        keep_latest: 0
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload to Release
       uses: svenstaro/upload-release-action@v2
-      if: steps.compile.outputs.status == 'success'
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: ${{ env.FIRMWARE_PATH }}/*
         tag: Latest-Release
         release_name: "ImmortalWrt Official Stable [${{ env.STABLE_VERSION }}]"
+        body_path: release_notes.md
         overwrite: true
         file_glob: true
-
-    - name: Remove Old Releases
-      uses: dev-drprasad/delete-older-releases@v0.3.3
-      if: steps.compile.outputs.status == 'success'
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
