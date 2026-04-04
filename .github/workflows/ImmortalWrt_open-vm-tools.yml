@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_Official_Stable_Final_V3
+name: Build_ImmortalWrt_Intelligent_V5
 
 on:
   workflow_dispatch:
@@ -34,23 +34,52 @@ jobs:
     - name: Clone Source
       run: git clone $REPO_URL -b ${{ env.TARGET_BRANCH }} openwrt
 
-    - name: Update Feeds
+    - name: Update Feeds & Intelligent Override
       run: |
         cd openwrt
+        # 1. 定义你的自定义源
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
-        echo "src-git netbird https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
+        echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" >> ./feeds.conf.default
         echo "src-git taskplan https://github.com/sirpdboy/luci-app-taskplan.git" >> ./feeds.conf.default
+        
+        # 2. 更新全部源
         ./scripts/feeds update -a
+        
+        # 3. 【智能化核心】自动查重并强制覆盖官方库
+        # 逻辑：遍历所有以 'src-git' 开头的自定义源下载目录，如果在官方 feed 目录下发现同名文件夹，则删除官方的。
+        echo "开始智能检测并覆盖冲突插件..."
+        CUSTOM_FEEDS="lucky small netbird_custom rtp2httpd taskplan"
+        for cf in $CUSTOM_FEEDS; do
+          if [ -d "feeds/$cf" ]; then
+            for pkg in $(ls feeds/$cf); do
+              # 检查并删除官方 packages 中的冲突
+              [ -d "feeds/packages/net/$pkg" ] && rm -rf "feeds/packages/net/$pkg" && echo "已覆盖官方包: $pkg"
+              [ -d "feeds/packages/utils/$pkg" ] && rm -rf "feeds/packages/utils/$pkg" && echo "已覆盖官方工具: $pkg"
+              # 检查并删除官方 luci 中的冲突
+              [ -d "feeds/luci/applications/$pkg" ] && rm -rf "feeds/luci/applications/$pkg" && echo "已覆盖官方LuCI插件: $pkg"
+            done
+          fi
+        done
+
+        # 4. 集成最新 open-vm-tools 源码
+        git clone https://github.com/vmware/open-vm-tools.git package/open-vm-tools-latest
+
+        # 5. 正式安装
         ./scripts/feeds install -a -f
 
-    - name: Custom Settings (Timezone & Language)
+    - name: Custom Settings (Fix Taskplan & Timezone)
       run: |
         cd openwrt
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
         sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
         sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
+        
+        # 针对新版 LuCI 强制清除索引缓存，确保 taskplan 等插件菜单刷新
+        mkdir -p files/etc/uci-defaults
+        echo "rm -f /tmp/luci-indexcache" > files/etc/uci-defaults/99-clean-cache
+        chmod +x files/etc/uci-defaults/99-clean-cache
 
     - name: Generate Config
       run: |
@@ -59,40 +88,22 @@ jobs:
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # --- 物理机+虚拟机全量驱动 ---
-        for pkg in autocore automount block-mount fdisk grub2-bios-setup fstools kmod-fs-f2fs kmod-fs-vfat mkf2fs partx-utils \
-        kmod-8139cp kmod-8139too kmod-e1000 kmod-e1000e kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-r8101 \
-        kmod-r8125 kmod-r8126 kmod-r8168 kmod-tg3 kmod-bnx2 kmod-forcedeth kmod-amazon-ena kmod-amd-xgbe kmod-dwmac-intel \
-        i915-firmware-dmc kmod-drm-i915 kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 \
-        kmod-usb-net-rtl8152-vendor kmod-usb-hid kmod-vmxnet3 kmod-pcnet32 open-vm-tools kmod-ata-piix \
-        kmod-scsi-core kmod-mptfusion kmod-mptspi kmod-mpt2sas kmod-mpt3sas; do
-          echo "CONFIG_PACKAGE_$pkg=y" >> .config
+        # 基础组件
+        echo "CONFIG_PACKAGE_luci=y" >> .config
+        echo "CONFIG_PACKAGE_luci-compat=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+        
+        # 物理机与虚拟机全量驱动 (包含最新 open-vm-tools)
+        for drv in autocore automount block-mount fdisk fstools kmod-fs-f2fs kmod-8139cp kmod-e1000e kmod-igc kmod-r8125 kmod-vmxnet3 open-vm-tools kmod-ata-piix kmod-scsi-core kmod-mptfusion; do
+          echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # --- 核心插件与补全 (针对你缺失的插件) ---
-        echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
-        echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-        
-        # 补全你要求的缺失插件
-        echo "CONFIG_PACKAGE_luci-proto-wireguard=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-wireguard=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-taskplan=y" >> .config
-        echo "CONFIG_PACKAGE_iperf3=y" >> .config
-        echo "CONFIG_PACKAGE_iftop=y" >> .config
-        echo "CONFIG_PACKAGE_tcpdump=y" >> .config
-        echo "CONFIG_PACKAGE_pv=y" >> .config
-        
-        # 原有插件
-        echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-nlbwmon=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-        echo "CONFIG_PACKAGE_netbird=y" >> .config
+        # 强制编译选中的插件
+        for app in lucky netbird rtp2httpd luci-app-rtp2httpd luci-app-taskplan luci-app-wireguard luci-proto-wireguard iperf3 tcpdump pv luci-app-passwall luci-app-ttyd; do
+          echo "CONFIG_PACKAGE_$app=y" >> .config
+        done
         
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=600" >> .config
-        
         make defconfig
         make download -j8
 
@@ -102,51 +113,46 @@ jobs:
         cd openwrt
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "COMPILE_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
-    - name: Organize & Rename Artifacts
+    - name: Organize & Rename
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
         V_TAG=$(echo ${{ env.TARGET_BRANCH }} | sed 's/openwrt-//')
-        # 架构信息硬编码为 x86-64
-        ARCH="x86_64"
-        
-        # 1. 提取插件信息
         echo "FIRMWARE_VERSION=$V_TAG" >> $GITHUB_ENV
+        
+        # 统计生成的插件列表
         echo "PLUGINS_LIST<<EOF" >> $GITHUB_ENV
         grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> $GITHUB_ENV
-        grep "CONFIG_PACKAGE_iperf3\|CONFIG_PACKAGE_iftop\|CONFIG_PACKAGE_tcpdump" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
         
-        # 2. 精准定位输出并重命名 (格式: 架构-版本-类型)
         F_PATH="bin/targets/x86/64"
         mkdir -p /tmp/upload/
-        find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-${ARCH}-${V_TAG}-efi.img.gz \;
-        find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-${ARCH}-${V_TAG}-legacy.img.gz \;
+        find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-x86_64-${V_TAG}-efi.img.gz \;
+        find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-x86_64-${V_TAG}-legacy.img.gz \;
 
-    - name: Remove Old Releases
+    - name: Remove Old Releases & Upload
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: /tmp/upload/*
+        tag: Latest-Release
+        release_name: "ImmortalWrt-${{ env.FIRMWARE_VERSION }}-x86_64"
+        body: |
+          ### 编译快报
+          - **分支**: ${{ env.TARGET_BRANCH }}
+          - **特性**: 智能检测同名插件并强制使用自定义源覆盖
+          - **驱动**: 集成物理机全系列网卡及最新 VMware Tools
+          
+          ### 插件清单:
+          ${{ env.PLUGINS_LIST }}
+        overwrite: true
+        file_glob: true
+
+    - name: Delete Old Tags
       uses: dev-drprasad/delete-older-releases@v0.3.3
       with:
         keep_latest: 0
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload to Release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: /tmp/upload/*
-        tag: Latest-Release
-        release_name: "ImmortalWrt-x86_64-${{ env.FIRMWARE_VERSION }}"
-        body: |
-          ### 编译详情
-          - **架构**: x86_64
-          - **分支**: ${{ env.TARGET_BRANCH }}
-          - **时间**: ${{ env.COMPILE_TIME }}
-          
-          ### 已集成插件:
-          ${{ env.PLUGINS_LIST }}
-        overwrite: true
-        file_glob: true
