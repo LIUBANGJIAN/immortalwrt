@@ -1,10 +1,10 @@
-name: Build_ImmortalWrt_Intelligent_V5
+name: Build_ImmortalWrt_Final_Fix_V6
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: '选择编译分支 (如 openwrt-24.10)'
+        description: '选择编译分支'
         required: true
         default: 'openwrt-24.10'
 
@@ -23,11 +23,13 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Space Cleanup
+    - name: Space Cleanup & Environment Setup
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver /opt/microsoft/powershell /opt/pipx /usr/share/azure-cli /opt/az /usr/lib/google-cloud-sdk
         sudo -E apt-get update
         sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        # 安装最新的 Go 环境，防止 Netbird 编译失败
+        sudo snap install go --classic
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
 
@@ -37,49 +39,24 @@ jobs:
     - name: Update Feeds & Intelligent Override
       run: |
         cd openwrt
-        # 1. 定义你的自定义源
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" >> ./feeds.conf.default
         echo "src-git taskplan https://github.com/sirpdboy/luci-app-taskplan.git" >> ./feeds.conf.default
         
-        # 2. 更新全部源
         ./scripts/feeds update -a
         
-        # 3. 【智能化核心】自动查重并强制覆盖官方库
-        # 逻辑：遍历所有以 'src-git' 开头的自定义源下载目录，如果在官方 feed 目录下发现同名文件夹，则删除官方的。
-        echo "开始智能检测并覆盖冲突插件..."
-        CUSTOM_FEEDS="lucky small netbird_custom rtp2httpd taskplan"
-        for cf in $CUSTOM_FEEDS; do
-          if [ -d "feeds/$cf" ]; then
-            for pkg in $(ls feeds/$cf); do
-              # 检查并删除官方 packages 中的冲突
-              [ -d "feeds/packages/net/$pkg" ] && rm -rf "feeds/packages/net/$pkg" && echo "已覆盖官方包: $pkg"
-              [ -d "feeds/packages/utils/$pkg" ] && rm -rf "feeds/packages/utils/$pkg" && echo "已覆盖官方工具: $pkg"
-              # 检查并删除官方 luci 中的冲突
-              [ -d "feeds/luci/applications/$pkg" ] && rm -rf "feeds/luci/applications/$pkg" && echo "已覆盖官方LuCI插件: $pkg"
-            done
-          fi
+        # 智能覆盖：删除官方仓库冲突项
+        echo "清理冲突插件..."
+        for pkg in netbird luci-app-netbird rtp2httpd luci-app-rtp2httpd; do
+          find feeds/packages feeds/luci -name "$pkg" -type d -exec rm -rf {} + || true
         done
-
-        # 4. 集成最新 open-vm-tools 源码
+        
+        # 单独拎出最新的 open-vm-tools
         git clone https://github.com/vmware/open-vm-tools.git package/open-vm-tools-latest
 
-        # 5. 正式安装
         ./scripts/feeds install -a -f
-
-    - name: Custom Settings (Fix Taskplan & Timezone)
-      run: |
-        cd openwrt
-        sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
-        sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
-        sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
-        
-        # 针对新版 LuCI 强制清除索引缓存，确保 taskplan 等插件菜单刷新
-        mkdir -p files/etc/uci-defaults
-        echo "rm -f /tmp/luci-indexcache" > files/etc/uci-defaults/99-clean-cache
-        chmod +x files/etc/uci-defaults/99-clean-cache
 
     - name: Generate Config
       run: |
@@ -93,13 +70,13 @@ jobs:
         echo "CONFIG_PACKAGE_luci-compat=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
         
-        # 物理机与虚拟机全量驱动 (包含最新 open-vm-tools)
+        # 驱动 (集成你要求的初始化包)
         for drv in autocore automount block-mount fdisk fstools kmod-fs-f2fs kmod-8139cp kmod-e1000e kmod-igc kmod-r8125 kmod-vmxnet3 open-vm-tools kmod-ata-piix kmod-scsi-core kmod-mptfusion; do
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # 强制编译选中的插件
-        for app in lucky netbird rtp2httpd luci-app-rtp2httpd luci-app-taskplan luci-app-wireguard luci-proto-wireguard iperf3 tcpdump pv luci-app-passwall luci-app-ttyd; do
+        # 插件 (确保名称正确)
+        for app in lucky netbird luci-app-netbird rtp2httpd luci-app-rtp2httpd luci-app-taskplan luci-app-wireguard luci-proto-wireguard iperf3 tcpdump pv luci-app-passwall luci-app-ttyd; do
           echo "CONFIG_PACKAGE_$app=y" >> .config
         done
         
@@ -111,6 +88,7 @@ jobs:
       id: compile
       run: |
         cd openwrt
+        # 使用 -j$(nproc) 提速，如果失败则转为单线程排查
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -119,9 +97,8 @@ jobs:
       run: |
         cd openwrt
         V_TAG=$(echo ${{ env.TARGET_BRANCH }} | sed 's/openwrt-//')
-        echo "FIRMWARE_VERSION=$V_TAG" >> $GITHUB_ENV
         
-        # 统计生成的插件列表
+        # 统计插件用于 Release Body
         echo "PLUGINS_LIST<<EOF" >> $GITHUB_ENV
         grep "CONFIG_PACKAGE_luci-app-" .config | grep "=y" | cut -d'_' -f3- | cut -d'=' -f1 | sed 's/^/- /' >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
@@ -131,25 +108,21 @@ jobs:
         find $F_PATH -name "*combined-efi.img.gz" -exec cp {} /tmp/upload/immortalwrt-x86_64-${V_TAG}-efi.img.gz \;
         find $F_PATH -name "*combined.img.gz" ! -name "*efi*" -exec cp {} /tmp/upload/immortalwrt-x86_64-${V_TAG}-legacy.img.gz \;
 
-    - name: Remove Old Releases & Upload
+    - name: Upload to Release
+      if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
         tag: Latest-Release
-        release_name: "ImmortalWrt-${{ env.FIRMWARE_VERSION }}-x86_64"
+        release_name: "ImmortalWrt-${{ env.TARGET_BRANCH }}-x86_64"
         body: |
-          ### 编译快报
-          - **分支**: ${{ env.TARGET_BRANCH }}
-          - **特性**: 智能检测同名插件并强制使用自定义源覆盖
-          - **驱动**: 集成物理机全系列网卡及最新 VMware Tools
-          
           ### 插件清单:
           ${{ env.PLUGINS_LIST }}
         overwrite: true
         file_glob: true
 
-    - name: Delete Old Tags
+    - name: Delete Old Releases & Tags
       uses: dev-drprasad/delete-older-releases@v0.3.3
       with:
         keep_latest: 0
