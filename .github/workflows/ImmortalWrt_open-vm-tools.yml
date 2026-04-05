@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V20_Full_Driver
+name: Build_ImmortalWrt_V21_Final
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
         sudo -E apt-get update
-        sudo -E apt-get -y install build-essential gawk git scons unzip gettext python3
+        sudo -E apt-get -y install build-essential gawk git scons unzip gettext python3 nano
         sudo snap install go --classic
 
     - name: 更新 Feeds 与集成 TurboACC
@@ -48,82 +48,86 @@ jobs:
     - name: 固件底层与时区配置
       run: |
         cd openwrt
-        # 强制上海时区
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
         sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
         sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
         
-        # 写入 .config 基础
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=900" >> .config
 
-    - name: 注入全量驱动 (按照你提供的清单补全)
+    - name: 注入全量驱动与插件 (V21 修正版)
       run: |
         cd openwrt
-        # 磁盘与系统工具
-        for pkg in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils; do
-          echo "CONFIG_PACKAGE_$pkg=y" >> .config
-        done
-
-        # 核心网卡驱动 (Intel/Realtek/AMD/Amazon/VMware)
-        for drv in kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 \
-        kmod-8139cp kmod-8139too kmod-i40e kmod-igb kmod-igbvf kmod-ixgbe kmod-ixgbevf \
-        kmod-pcnet32 kmod-r8101 kmod-tulip kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 \
-        kmod-e1000 kmod-tg3 kmod-forcedeth kmod-dwmac-intel open-vm-tools; do
+        # 1. 驱动全量补齐 (你提供的清单)
+        for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
+        kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-8139cp kmod-8139too \
+        kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 \
+        kmod-tulip kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 kmod-e1000 kmod-tg3 kmod-forcedeth \
+        kmod-dwmac-intel open-vm-tools kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 \
+        kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-usb-hid i915-firmware-dmc kmod-drm-i915 \
+        kmod-fs-f2fs kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # USB网卡与固件
-        for usb in kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 \
-        kmod-usb-net-rtl8152-vendor kmod-usb-hid i915-firmware-dmc kmod-drm-i915; do
-          echo "CONFIG_PACKAGE_$usb=y" >> .config
+        # 2. 应用插件 (修正缺失项)
+        for app in luci-compat luci-i18n-base-zh-cn luci-app-lucky netbird luci-app-rtp2httpd \
+        rtp2httpd luci-app-turboacc luci-i18n-turboacc-zh-cn luci-app-passwall luci-app-ttyd \
+        luci-app-frps luci-app-frpc luci-app-netdata wireguard luci-app-wireguard luci-proto-wireguard \
+        iperf3 iperf nano tcpdump pv iftop htop; do
+          echo "CONFIG_PACKAGE_$app=y" >> .config
         done
-
-        # 文件系统与NAT增强
-        for fs in kmod-fs-f2fs kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
-          echo "CONFIG_PACKAGE_$fs=y" >> .config
-        done
-
-    - name: 注入定制插件 (CONFIG_PACKAGE 模式)
-      run: |
-        cd openwrt
-        # 基础组件
-        echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_luci-compat=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
-
-        # 应用插件清单
-        echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
-        echo "CONFIG_PACKAGE_netbird=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-rtp2httpd=y" >> .config
-        echo "CONFIG_PACKAGE_rtp2httpd=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-frps=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-frpc=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-turboacc=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y" >> .config
-
-        # 工具类
-        echo "CONFIG_PACKAGE_iperf3=y" >> .config
-        echo "CONFIG_PACKAGE_tcpdump=y" >> .config
-        echo "CONFIG_PACKAGE_htop=y" >> .config
 
         make defconfig
+        # 二次检查：确保关键包没被剔除
+        for app in netbird wireguard pv iftop; do
+          grep -q "CONFIG_PACKAGE_$app=y" .config || echo "CONFIG_PACKAGE_$app=y" >> .config
+        done
         make download -j16
 
     - name: 编译
+      id: compile
       run: |
         cd openwrt
         make -j$(nproc) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+        echo "OS_VER=$(grep "DISTRIB_REVISION" package/base-files/files/etc/openwrt_release | cut -d"'" -f2)" >> $GITHUB_ENV
 
-    - name: 发布 Release
+    - name: 整理镜像 (只保留 Squashfs)
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd openwrt
+        mkdir -p /tmp/upload/
+        # 只筛选包含 squashfs 和 combined 的镜像
+        find bin/targets/x86/64/ -name "*combined-squashfs*.img.gz" -exec cp {} /tmp/upload/ \;
+        cd /tmp/upload/
+        for f in *efi.img.gz; do mv "$f" "ImmortalWrt-x86_64-EFI-Squashfs.img.gz" 2>/dev/null || true; done
+        for f in *.img.gz; do [[ "$f" != *"EFI"* ]] && mv "$f" "ImmortalWrt-x86_64-Legacy-Squashfs.img.gz" 2>/dev/null || true; done
+
+    - name: 发布 Release (保留最后3个)
+      if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: openwrt/bin/targets/x86/64/*combined*.img.gz
-        tag: Latest-Standard-V20
+        file: /tmp/upload/*
+        tag: Release-${{ github.run_id }}
+        release_name: "ImmortalWrt-${{ env.BUILD_TIME }}"
+        body: |
+          ### 编译信息
+          - **编译时间**: ${{ env.BUILD_TIME }}
+          - **源码版本**: ${{ github.event.inputs.branch }} / ${{ env.OS_VER }}
+          - **镜像类型**: Squashfs (仅保留)
+          - **集成插件**: Lucky, Netbird, TurboACC, Passwall, Netdata, Wireguard, FRP, iperf, nano, etc.
         overwrite: true
         file_glob: true
+
+    - name: 滚动清理 (只保留最后3个 Release)
+      if: steps.compile.outputs.status == 'success'
+      uses: dev-drprasad/delete-older-releases@v0.3.3
+      with:
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
