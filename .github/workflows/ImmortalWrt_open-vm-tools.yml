@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V21_Final
+name: Build_ImmortalWrt_V22_Final
 
 on:
   workflow_dispatch:
@@ -48,6 +48,7 @@ jobs:
     - name: 固件底层与时区配置
       run: |
         cd openwrt
+        # 强制上海时区
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
         sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
         sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
@@ -57,73 +58,78 @@ jobs:
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=900" >> .config
 
-    - name: 注入全量驱动与插件 (V21 修正版)
+    - name: 注入全量驱动与插件 (V22 修正)
       run: |
         cd openwrt
-        # 1. 驱动全量补齐 (你提供的清单)
+        # 1. 驱动全量补齐 (包含清单内所有网卡及 i915 核显)
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
         kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-8139cp kmod-8139too \
-        kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 \
-        kmod-tulip kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 kmod-e1000 kmod-tg3 kmod-forcedeth \
-        kmod-dwmac-intel open-vm-tools kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 \
-        kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-usb-hid i915-firmware-dmc kmod-drm-i915 \
-        kmod-fs-f2fs kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
+        kmod-i40e kmod-igb kmod-igbvf kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 kmod-tulip \
+        kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 kmod-e1000 kmod-tg3 kmod-forcedeth kmod-dwmac-intel \
+        open-vm-tools kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 \
+        kmod-usb-net-rtl8152-vendor kmod-usb-hid i915-firmware-dmc kmod-drm-i915 kmod-fs-f2fs \
+        kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # 2. 应用插件 (修正缺失项)
-        for app in luci-compat luci-i18n-base-zh-cn luci-app-lucky netbird luci-app-rtp2httpd \
-        rtp2httpd luci-app-turboacc luci-i18n-turboacc-zh-cn luci-app-passwall luci-app-ttyd \
-        luci-app-frps luci-app-frpc luci-app-netdata wireguard luci-app-wireguard luci-proto-wireguard \
-        iperf3 iperf nano tcpdump pv iftop htop; do
+        # 2. 插件列表 (确保每一行都是 =y 模式)
+        for app in \
+        luci-compat luci-i18n-base-zh-cn luci-app-lucky netbird luci-app-rtp2httpd rtp2httpd \
+        luci-app-turboacc luci-i18n-turboacc-zh-cn luci-app-passwall luci-app-ttyd \
+        luci-app-frps luci-app-frpc luci-app-netdata wireguard luci-app-wireguard \
+        luci-proto-wireguard luci-app-upnp iperf3 iperf nano tcpdump pv iftop htop; do
           echo "CONFIG_PACKAGE_$app=y" >> .config
         done
 
         make defconfig
-        # 二次检查：确保关键包没被剔除
-        for app in netbird wireguard pv iftop; do
-          grep -q "CONFIG_PACKAGE_$app=y" .config || echo "CONFIG_PACKAGE_$app=y" >> .config
+        # 再次强力检查，防止 defconfig 自动删除
+        for must_have in netbird wireguard pv iftop luci-app-upnp; do
+          grep -q "CONFIG_PACKAGE_$must_have=y" .config || echo "CONFIG_PACKAGE_$must_have=y" >> .config
         done
         make download -j16
 
-    - name: 编译
+    - name: 编译固件
       id: compile
       run: |
         cd openwrt
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+        # 提取源码的具体 Revision
         echo "OS_VER=$(grep "DISTRIB_REVISION" package/base-files/files/etc/openwrt_release | cut -d"'" -f2)" >> $GITHUB_ENV
 
-    - name: 整理镜像 (只保留 Squashfs)
+    - name: 整理镜像 (只提取 Squashfs)
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
-        # 只筛选包含 squashfs 和 combined 的镜像
+        # 只拷贝包含 squashfs 字样的 combined 镜像
         find bin/targets/x86/64/ -name "*combined-squashfs*.img.gz" -exec cp {} /tmp/upload/ \;
         cd /tmp/upload/
-        for f in *efi.img.gz; do mv "$f" "ImmortalWrt-x86_64-EFI-Squashfs.img.gz" 2>/dev/null || true; done
-        for f in *.img.gz; do [[ "$f" != *"EFI"* ]] && mv "$f" "ImmortalWrt-x86_64-Legacy-Squashfs.img.gz" 2>/dev/null || true; done
+        # 规范化命名
+        [ -f *efi.img.gz ] && mv *efi.img.gz "ImmortalWrt-24.10-x86_64-EFI-Squashfs.img.gz" || true
+        [ -f *combined.img.gz ] && [[ ! -f "ImmortalWrt-24.10-x86_64-EFI-Squashfs.img.gz" ]] && mv *combined.img.gz "ImmortalWrt-24.10-x86_64-Legacy-Squashfs.img.gz" || true
+        # 如果还有其他未更名的 squashfs，统一重命名（Legacy版）
+        find . -name "*combined-squashfs.img.gz" -exec mv {} "ImmortalWrt-24.10-x86_64-Legacy-Squashfs.img.gz" \; 2>/dev/null || true
 
-    - name: 发布 Release (保留最后3个)
+    - name: 上传到 Release 并设置滚动删除
       if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: Release-${{ github.run_id }}
-        release_name: "ImmortalWrt-${{ env.BUILD_TIME }}"
+        tag: "Build-${{ github.run_id }}"
+        release_name: "ImmortalWrt [${{ env.BUILD_TIME }}]"
         body: |
-          ### 编译信息
+          ### 固件构建成功
           - **编译时间**: ${{ env.BUILD_TIME }}
-          - **源码版本**: ${{ github.event.inputs.branch }} / ${{ env.OS_VER }}
-          - **镜像类型**: Squashfs (仅保留)
-          - **集成插件**: Lucky, Netbird, TurboACC, Passwall, Netdata, Wireguard, FRP, iperf, nano, etc.
+          - **系统版本**: ${{ env.OS_VER }} (SNAPSHOT)
+          - **镜像格式**: 仅 Squashfs (支持工厂重置)
+          - **集成核心**: TurboACC, Netbird, Wireguard, UPnP, Lucky, Netdata, Passwall, FRP, etc.
         overwrite: true
         file_glob: true
 
-    - name: 滚动清理 (只保留最后3个 Release)
+    - name: 自动清理旧 Release (仅保留最后3个)
       if: steps.compile.outputs.status == 'success'
       uses: dev-drprasad/delete-older-releases@v0.3.3
       with:
