@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V23_Node24_Optimized
+name: Build_ImmortalWrt_V24_Standard_Update
 
 on:
   workflow_dispatch:
@@ -8,10 +8,6 @@ on:
         required: true
         default: 'openwrt-24.10'
 
-env:
-  # 【核心修正】消除 Node.js 20 弃用警告，强制使用 Node 24
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -20,7 +16,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5  # 【已升级】直接使用 v5 解决 Node 弃用警告
 
     - name: 磁盘与环境准备
       run: |
@@ -61,10 +57,10 @@ jobs:
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=900" >> .config
 
-    - name: 注入全量驱动与插件 (V23 修正)
+    - name: 注入全量驱动与插件 (V24 最终版)
       run: |
         cd openwrt
-        # 1. 驱动与基础包
+        # 1. 驱动与基础 (包含你提供的全部 kmod 清单)
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
         kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-8139cp kmod-8139too \
         kmod-i40e kmod-igb kmod-igbvf kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 kmod-tulip \
@@ -75,7 +71,7 @@ jobs:
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # 2. 应用插件 (包含 netbird, wireguard, iftop, pv, upnp, netdata, nano, iperf 等)
+        # 2. 插件应用 (包含 netbird, wireguard, iftop, pv, upnp, netdata, nano, iperf 等)
         for app in \
         luci-compat luci-i18n-base-zh-cn luci-app-lucky netbird luci-app-rtp2httpd rtp2httpd \
         luci-app-turboacc luci-i18n-turboacc-zh-cn luci-app-passwall luci-app-ttyd \
@@ -85,13 +81,13 @@ jobs:
         done
 
         make defconfig
-        # 强制复检：确保高优先级插件不被剔除
-        for must_have in netbird wireguard pv iftop luci-app-upnp luci-app-netdata; do
-          grep -q "CONFIG_PACKAGE_$must_have=y" .config || echo "CONFIG_PACKAGE_$must_have=y" >> .config
+        # 强制防剔除逻辑
+        for must in netbird wireguard pv iftop luci-app-upnp luci-app-netdata; do
+          grep -q "CONFIG_PACKAGE_$must=y" .config || echo "CONFIG_PACKAGE_$must=y" >> .config
         done
         make download -j16
 
-    - name: 编译固件
+    - name: 编译
       id: compile
       run: |
         cd openwrt
@@ -100,20 +96,17 @@ jobs:
         echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
         echo "OS_VER=$(grep "DISTRIB_REVISION" package/base-files/files/etc/openwrt_release | cut -d"'" -f2 || echo "Unknown")" >> $GITHUB_ENV
 
-    - name: 整理镜像 (极致精简：仅 Squashfs)
+    - name: 整理镜像 (只提取 Squashfs)
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
-        # 只保留 squashfs-combined 字样的镜像
         find bin/targets/x86/64/ -name "*combined-squashfs*.img.gz" -exec cp {} /tmp/upload/ \;
         cd /tmp/upload/
-        # 改名为简洁好记的名称
         [ -f *efi.img.gz ] && mv *efi.img.gz "ImmortalWrt-x86-64-EFI-Squashfs.img.gz" || true
-        # 兜底：处理非 EFI 的 Legacy 镜像命名
         find . -name "*combined-squashfs.img.gz" ! -name "*EFI*" -exec mv {} "ImmortalWrt-x86-64-Legacy-Squashfs.img.gz" \; 2>/dev/null || true
 
-    - name: 发布 Release 并注入元数据
+    - name: 发布 Release
       if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
@@ -122,15 +115,14 @@ jobs:
         tag: "Build-${{ github.run_id }}"
         release_name: "ImmortalWrt-${{ env.BUILD_TIME }}"
         body: |
-          ### 构建完成
-          - **编译时间**: ${{ env.BUILD_TIME }} (Asia/Shanghai)
-          - **源码版本**: ${{ github.event.inputs.branch }} / ${{ env.OS_VER }}
-          - **镜像格式**: Squashfs (支持 Factory Reset)
-          - **核心集成**: TurboACC, Netbird, Wireguard, UPnP, Passwall, Netdata, etc.
+          ### 构建成功 (Node 24 Ready)
+          - **编译时间**: ${{ env.BUILD_TIME }}
+          - **源码版本**: ${{ env.OS_VER }}
+          - **镜像类型**: 仅 Squashfs (支持 Factory Reset)
         overwrite: true
         file_glob: true
 
-    - name: 滚动删除 (发布成功后保留最后 3 个)
+    - name: 滚动清理 (保留 3 个)
       if: steps.compile.outputs.status == 'success'
       uses: dev-drprasad/delete-older-releases@v0.3.3
       with:
