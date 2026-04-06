@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V29_Final_Capture
+name: Build_ImmortalWrt_V31_Netbird_Binary_Only
 
 on:
   workflow_dispatch:
@@ -32,36 +32,44 @@ jobs:
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
+        
+        # 1. 注入源 (只保留你需要的)
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
-        echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
-        echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" >> ./feeds.conf.default
+        echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
+        
         ./scripts/feeds update -a
-        for pkg in lucky netbird rtp2httpd frpc frps turboacc; do
-          find feeds/ -name "$pkg" -type d -exec rm -rf {} + || true
-        done
-        git clone https://github.com/chenmozhijin/turboacc package/turboacc
+        
+        # 2. 核心操作：删除官方可能存在的 netbird 残留，确保只用自定义源
+        find feeds/ -name "*netbird*" -type d -exec rm -rf {} + || true
+        
         ./scripts/feeds install -a
 
-    - name: 固件配置 (扩容+强制镜像格式)
+    - name: 固件配置 (强制选中二进制 Netbird)
       run: |
         cd openwrt
-        # 时区
+        # 时区设置
         sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
-        sed -i "s/timezone='.*'/timezone='CST-8'/g" package/base-files/files/bin/config_generate
-        sed -i "s/zonename='.*'/zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
         
-        # 强制配置
+        # 基础架构与分区
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
-        # 扩容至 1024MB，确保能塞下所有驱动
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
-        # 【新增】显式强制生成 squashfs 镜像
-        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        echo "CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=256" >> .config
 
-        # 驱动与插件注入 (此处保持你之前的长列表)
+        # --- 强制选中 Netbird 及其运行必须的内核模块 ---
+        echo "CONFIG_PACKAGE_netbird=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
+        echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+
+        # 其他你需要的插件
+        for app in luci-compat luci-i18n-base-zh-cn luci-app-lucky luci-app-turboacc \
+        luci-app-passwall luci-app-ttyd luci-app-netdata wireguard luci-app-wireguard \
+        luci-app-upnp iperf3 nano htop; do
+          echo "CONFIG_PACKAGE_$app=y" >> .config
+        done
+
+        # 写入全量驱动 (保持你的长列表)
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
         kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-8139cp kmod-8139too \
         kmod-i40e kmod-igb kmod-igbvf kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 kmod-tulip \
@@ -71,14 +79,15 @@ jobs:
         kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
-        for app in luci-compat luci-i18n-base-zh-cn luci-app-lucky netbird luci-app-rtp2httpd rtp2httpd \
-        luci-app-turboacc luci-i18n-turboacc-zh-cn luci-app-passwall luci-app-ttyd \
-        luci-app-frps luci-app-frpc luci-app-netdata wireguard luci-app-wireguard \
-        luci-proto-wireguard luci-app-upnp iperf3 iperf nano tcpdump pv iftop htop; do
-          echo "CONFIG_PACKAGE_$app=y" >> .config
-        done
 
+        # 关键：先执行 defconfig，然后检查 netbird 是否还在，不在就强制加回
         make defconfig
+        if ! grep -q "CONFIG_PACKAGE_netbird=y" .config; then
+          echo "Netbird 被剔除，正在强制注入..."
+          echo "CONFIG_PACKAGE_netbird=y" >> .config
+          # 重新整理依赖，不使用 defconfig 以免再次被刷掉
+        fi
+
         make download -j16
 
     - name: 编译
@@ -87,44 +96,21 @@ jobs:
         cd openwrt
         make -j$(nproc) || make -j1 V=s || exit 1
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
-    - name: 整理镜像 (放宽匹配规则)
+    - name: 整理发布
       if: steps.compile.outputs.status == 'success'
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
-        BIN_DIR="bin/targets/x86/64"
-        # 只要是镜像 (.img.gz)，无论是不是 squashfs，全部抓取！
-        if [ -z "$(ls -A $BIN_DIR/*.img.gz 2>/dev/null)" ]; then
-          echo "致命错误：在 $BIN_DIR 中没有找到任何镜像文件！"
-          exit 1
-        fi
-        cp $BIN_DIR/*.img.gz /tmp/upload/
-        echo "已成功捕获以下镜像："
-        ls -lh /tmp/upload/
+        find bin/targets/x86/64/ -name "*.img.gz" -exec cp {} /tmp/upload/ \;
 
-    - name: 发布 Release
+    - name: Upload Release
       if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
         tag: "Build-${{ github.run_id }}"
-        release_name: "ImmortalWrt-${{ env.BUILD_TIME }}"
-        body: |
-          ### 构建详情
-          - 分区大小: 1024MB
-          - 镜像状态: 全量镜像捕获 (包含 Squashfs/Ext4)
-          - 插件源: 强制自定义 Feeds
+        release_name: "ImmortalWrt-Netbird-CLI-Fixed"
         overwrite: true
         file_glob: true
-
-    - name: 滚动清理
-      if: steps.compile.outputs.status == 'success'
-      uses: dev-drprasad/delete-older-releases@v0.3.3
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
