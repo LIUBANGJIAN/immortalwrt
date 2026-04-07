@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V35_Go1.25_Fix
+name: Build_ImmortalWrt_V36_Hard_Core_Fix
 
 on:
   workflow_dispatch:
@@ -18,12 +18,10 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
 
-    # 【新增】安装 Go 1.25 (目前官方支持到 1.24.x，建议用 1.24 或 stable)
-    - name: Setup Go 1.24 (Latest Stable)
+    - name: Setup Go 1.24
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
-        check-latest: true
 
     - name: 极限空间清理
       run: |
@@ -33,11 +31,9 @@ jobs:
         sudo chown $USER:$USER /mnt/openwrt_work /mnt/go_cache
         mkdir -p $(pwd)/openwrt
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
-        # 将 Go 缓存指向大容量分区
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
-        echo "GO111MODULE=on" >> $GITHUB_ENV
 
-    - name: 更新 Feeds 与源冲突处理
+    - name: 更新 Feeds 与强制清理冲突
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
@@ -47,36 +43,33 @@ jobs:
         echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
-        
-        # 彻底铲除官方冲突包，确保强制使用自定义源
-        for pkg in lucky netbird frpc frps luci-app-frpc luci-app-frps luci-app-turboacc; do
-          find feeds/ -name "$pkg" -type d -exec rm -rf {} + || true
+        # 强制清理：防止官方源里的旧版/残缺 Makefile 干扰编译
+        for pkg in lucky netbird frpc frps turboacc; do
+          find feeds/ -name "*$pkg*" -type d -exec rm -rf {} + || true
         done
-        
         ./scripts/feeds install -a
 
-    - name: 固件配置 (强制写入缺失插件)
+    - name: 固件配置 (强制开启 Golang 基础环境)
       run: |
         cd openwrt
-        # 基础配置
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # 补齐 Netbird 必选底层模块 (没有 tun，netbird 绝不会出现)
-        for dep in kmod-tun ca-bundle libstdcpp ca-certificates; do
-          echo "CONFIG_PACKAGE_$dep=y" >> .config
-        done
+        # --- 【关键】强制开启 Go 语言环境和内核隧道支持 ---
+        echo "CONFIG_PACKAGE_golang=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
+        echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
 
-        # 核心插件锁定 (增加 iperf/pv/iftop 等工具)
+        # --- 插件清单 ---
         for app in netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc \
         luci-app-passwall luci-app-netdata luci-app-ttyd wireguard luci-app-wireguard \
         pv iftop iperf3 nano htop tcpdump; do
           echo "CONFIG_PACKAGE_$app=y" >> .config
         done
 
-        # 你的驱动列表 (保持不变)
+        # --- 驱动清单 ---
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
         kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-i40e kmod-igb \
         kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152-vendor kmod-usb-hid \
@@ -86,22 +79,23 @@ jobs:
 
         make defconfig
 
-        # 【二次强制注入】如果 defconfig 删掉了，直接暴力写回
-        for force in netbird pv iftop iperf3 luci-app-frps luci-app-frpc luci-app-turboacc; do
+        # --- 【核心防线】如果 defconfig 把插件删了，强行写回并强制为 'y' ---
+        # 注意：这里使用了 sed 强制改写，防止它变成 'is not set'
+        for force in netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc pv iftop iperf3; do
+          sed -i "s/# CONFIG_PACKAGE_$force is not set/CONFIG_PACKAGE_$force=y/g" .config
           echo "CONFIG_PACKAGE_$force=y" >> .config
         done
         
-        # 强制使用系统 Go 版本进行编译（关键补丁）
-        sed -i 's/$(STAGING_DIR_HOST)\/bin\/go/go/g' feeds/small/*/Makefile 2>/dev/null || true
-        sed -i 's/$(STAGING_DIR_HOST)\/bin\/go/go/g' feeds/netbird_custom/*/Makefile 2>/dev/null || true
+        # 再次确认 Go 环境
+        echo "CONFIG_PACKAGE_golang=y" >> .config
 
         make download -j16
 
-    - name: 编译 (强制使用系统 Go)
+    - name: 编译 (带日志查看)
       run: |
         cd openwrt
-        # 检查 Go 版本
-        go version
+        # 编译前最后看一眼配置里到底有没有 netbird
+        grep "CONFIG_PACKAGE_netbird" .config || echo "Netbird 依然丢失！"
         make -j$(nproc) || make -j1 V=s || exit 1
 
     - name: 整理并发布
@@ -115,7 +109,7 @@ jobs:
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: "Build-Go1.24-${{ github.run_id }}"
-        release_name: "ImmortalWrt-Go-Enhanced-V35"
+        tag: "Build-V36-${{ github.run_id }}"
+        release_name: "ImmortalWrt-V36-Total-Fix"
         overwrite: true
         file_glob: true
