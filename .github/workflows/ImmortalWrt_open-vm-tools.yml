@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V31_Netbird_Binary_Only
+name: Build_ImmortalWrt_V33_Logic_Fix
 
 on:
   workflow_dispatch:
@@ -28,89 +28,89 @@ jobs:
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
 
-    - name: 更新 Feeds 与源处理
+    - name: 更新 Feeds 并解决源码冲突
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
         
-        # 1. 注入源 (只保留你需要的)
+        # 1. 注入你的源 (注意顺序：后面的会覆盖前面的)
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
-        echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
+        echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
         
-        # 2. 核心操作：删除官方可能存在的 netbird 残留，确保只用自定义源
-        find feeds/ -name "*netbird*" -type d -exec rm -rf {} + || true
+        # 2. 【核心改动】彻底清理可能导致 netbird/frp 消失的同名冲突
+        # 确保 netbird 和 frp 只从你的自定义源中提取，不使用官方损坏或不兼容的 Makefile
+        for pkg in netbird luci-app-netbird frpc frps luci-app-frpc luci-app-frps; do
+          find feeds/ -name "$pkg" -type d -exec rm -rf {} + || true
+        done
         
         ./scripts/feeds install -a
 
-    - name: 固件配置 (强制选中二进制 Netbird)
+    - name: 固件配置 (补齐 Netbird 必选内核模块)
       run: |
         cd openwrt
-        # 时区设置
-        sed -i 's/UTC/CST-8/g' package/base-files/files/bin/config_generate
-        
-        # 基础架构与分区
+        # 基础架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # --- 强制选中 Netbird 及其运行必须的内核模块 ---
-        echo "CONFIG_PACKAGE_netbird=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
-        echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+        # --- 强制注入 Netbird 和 Frp 运行必须的底层依赖 ---
+        # 如果没选 kmod-tun，netbird 100% 会被剔除
+        for dep in kmod-tun ca-bundle libstdcpp ca-certificates; do
+          echo "CONFIG_PACKAGE_$dep=y" >> .config
+        done
 
-        # 其他你需要的插件
-        for app in luci-compat luci-i18n-base-zh-cn luci-app-lucky luci-app-turboacc \
-        luci-app-passwall luci-app-ttyd luci-app-netdata wireguard luci-app-wireguard \
-        luci-app-upnp iperf3 nano htop; do
+        # --- 强制选中你要的插件 ---
+        for app in \
+        netbird \
+        luci-app-lucky \
+        luci-app-frps luci-app-frpc \
+        luci-app-turboacc luci-i18n-turboacc-zh-cn \
+        luci-app-passwall luci-app-netdata luci-app-ttyd \
+        wireguard luci-app-wireguard \
+        pv iftop iperf3 nano htop tcpdump; do
           echo "CONFIG_PACKAGE_$app=y" >> .config
         done
 
-        # 写入全量驱动 (保持你的长列表)
+        # 写入你的全量驱动 (保持不变)
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
-        kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-8139cp kmod-8139too \
-        kmod-i40e kmod-igb kmod-igbvf kmod-ixgbe kmod-ixgbevf kmod-pcnet32 kmod-r8101 kmod-tulip \
-        kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 kmod-e1000 kmod-tg3 kmod-forcedeth kmod-dwmac-intel \
-        open-vm-tools kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 \
-        kmod-usb-net-rtl8152-vendor kmod-usb-hid i915-firmware-dmc kmod-drm-i915 kmod-fs-f2fs \
-        kmod-fs-vfat kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload; do
+        kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-i40e kmod-igb \
+        kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152-vendor kmod-usb-hid \
+        i915-firmware-dmc kmod-drm-i915 kmod-fs-f2fs kmod-fs-vfat; do
           echo "CONFIG_PACKAGE_$drv=y" >> .config
         done
 
-        # 关键：先执行 defconfig，然后检查 netbird 是否还在，不在就强制加回
         make defconfig
-        if ! grep -q "CONFIG_PACKAGE_netbird=y" .config; then
-          echo "Netbird 被剔除，正在强制注入..."
-          echo "CONFIG_PACKAGE_netbird=y" >> .config
-          # 重新整理依赖，不使用 defconfig 以免再次被刷掉
-        fi
-
+        
+        # --- 【最后防线】在编译前检查清单并强行再次写回 ---
+        # 针对消失严重的 netbird 和工具类进行二次补登
+        for force in netbird pv iftop iperf3 luci-app-frps luci-app-frpc; do
+          grep -q "CONFIG_PACKAGE_$force=y" .config || echo "CONFIG_PACKAGE_$force=y" >> .config
+        done
+        
         make download -j16
 
     - name: 编译
-      id: compile
       run: |
         cd openwrt
+        # 这里的报错会直接中断 workflow，让你能看到失败的具体 Makefile
         make -j$(nproc) || make -j1 V=s || exit 1
-        echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 整理发布
-      if: steps.compile.outputs.status == 'success'
+    - name: 整理并发布
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
         find bin/targets/x86/64/ -name "*.img.gz" -exec cp {} /tmp/upload/ \;
-
+        
     - name: Upload Release
-      if: steps.compile.outputs.status == 'success'
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
         tag: "Build-${{ github.run_id }}"
-        release_name: "ImmortalWrt-Netbird-CLI-Fixed"
+        release_name: "ImmortalWrt-Final-V33"
         overwrite: true
         file_glob: true
