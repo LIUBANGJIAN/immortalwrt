@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V33_Logic_Fix
+name: Build_ImmortalWrt_V35_Go1.25_Fix
 
 on:
   workflow_dispatch:
@@ -18,6 +18,13 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
 
+    # 【新增】安装 Go 1.25 (目前官方支持到 1.24.x，建议用 1.24 或 stable)
+    - name: Setup Go 1.24 (Latest Stable)
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+        check-latest: true
+
     - name: 极限空间清理
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver /opt/microsoft/powershell /opt/pipx /usr/share/azure-cli /opt/az /usr/lib/google-cloud-sdk
@@ -26,56 +33,50 @@ jobs:
         sudo chown $USER:$USER /mnt/openwrt_work /mnt/go_cache
         mkdir -p $(pwd)/openwrt
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
+        # 将 Go 缓存指向大容量分区
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
+        echo "GO111MODULE=on" >> $GITHUB_ENV
 
-    - name: 更新 Feeds 并解决源码冲突
+    - name: 更新 Feeds 与源冲突处理
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
         
-        # 1. 注入你的源 (注意顺序：后面的会覆盖前面的)
         echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
         
-        # 2. 【核心改动】彻底清理可能导致 netbird/frp 消失的同名冲突
-        # 确保 netbird 和 frp 只从你的自定义源中提取，不使用官方损坏或不兼容的 Makefile
-        for pkg in netbird luci-app-netbird frpc frps luci-app-frpc luci-app-frps; do
+        # 彻底铲除官方冲突包，确保强制使用自定义源
+        for pkg in lucky netbird frpc frps luci-app-frpc luci-app-frps luci-app-turboacc; do
           find feeds/ -name "$pkg" -type d -exec rm -rf {} + || true
         done
         
         ./scripts/feeds install -a
 
-    - name: 固件配置 (补齐 Netbird 必选内核模块)
+    - name: 固件配置 (强制写入缺失插件)
       run: |
         cd openwrt
-        # 基础架构
+        # 基础配置
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # --- 强制注入 Netbird 和 Frp 运行必须的底层依赖 ---
-        # 如果没选 kmod-tun，netbird 100% 会被剔除
+        # 补齐 Netbird 必选底层模块 (没有 tun，netbird 绝不会出现)
         for dep in kmod-tun ca-bundle libstdcpp ca-certificates; do
           echo "CONFIG_PACKAGE_$dep=y" >> .config
         done
 
-        # --- 强制选中你要的插件 ---
-        for app in \
-        netbird \
-        luci-app-lucky \
-        luci-app-frps luci-app-frpc \
-        luci-app-turboacc luci-i18n-turboacc-zh-cn \
-        luci-app-passwall luci-app-netdata luci-app-ttyd \
-        wireguard luci-app-wireguard \
+        # 核心插件锁定 (增加 iperf/pv/iftop 等工具)
+        for app in netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc \
+        luci-app-passwall luci-app-netdata luci-app-ttyd wireguard luci-app-wireguard \
         pv iftop iperf3 nano htop tcpdump; do
           echo "CONFIG_PACKAGE_$app=y" >> .config
         done
 
-        # 写入你的全量驱动 (保持不变)
+        # 你的驱动列表 (保持不变)
         for drv in autocore automount block-mount fdisk fstools grub2-bios-setup mkf2fs mtd partx-utils \
         kmod-e1000e kmod-igc kmod-r8125 kmod-r8126 kmod-r8168 kmod-vmxnet3 kmod-i40e kmod-igb \
         kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8152-vendor kmod-usb-hid \
@@ -84,19 +85,23 @@ jobs:
         done
 
         make defconfig
-        
-        # --- 【最后防线】在编译前检查清单并强行再次写回 ---
-        # 针对消失严重的 netbird 和工具类进行二次补登
-        for force in netbird pv iftop iperf3 luci-app-frps luci-app-frpc; do
-          grep -q "CONFIG_PACKAGE_$force=y" .config || echo "CONFIG_PACKAGE_$force=y" >> .config
+
+        # 【二次强制注入】如果 defconfig 删掉了，直接暴力写回
+        for force in netbird pv iftop iperf3 luci-app-frps luci-app-frpc luci-app-turboacc; do
+          echo "CONFIG_PACKAGE_$force=y" >> .config
         done
         
+        # 强制使用系统 Go 版本进行编译（关键补丁）
+        sed -i 's/$(STAGING_DIR_HOST)\/bin\/go/go/g' feeds/small/*/Makefile 2>/dev/null || true
+        sed -i 's/$(STAGING_DIR_HOST)\/bin\/go/go/g' feeds/netbird_custom/*/Makefile 2>/dev/null || true
+
         make download -j16
 
-    - name: 编译
+    - name: 编译 (强制使用系统 Go)
       run: |
         cd openwrt
-        # 这里的报错会直接中断 workflow，让你能看到失败的具体 Makefile
+        # 检查 Go 版本
+        go version
         make -j$(nproc) || make -j1 V=s || exit 1
 
     - name: 整理并发布
@@ -110,7 +115,7 @@ jobs:
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: "Build-${{ github.run_id }}"
-        release_name: "ImmortalWrt-Final-V33"
+        tag: "Build-Go1.24-${{ github.run_id }}"
+        release_name: "ImmortalWrt-Go-Enhanced-V35"
         overwrite: true
         file_glob: true
