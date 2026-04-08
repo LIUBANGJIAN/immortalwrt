@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V39_Final_Fix
+name: Build_ImmortalWrt_V40_Go1.25_Hijack
 
 on:
   workflow_dispatch:
@@ -18,10 +18,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
 
-    - name: Setup Go 1.24
+    # 1. 安装真正的 Go 1.25 (使用官方最新 main/rc 分支以满足 1.25.5 要求)
+    - name: Setup Go 1.25
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '>=1.25.0-rc.1' 
 
     - name: 极限空间清理
       run: |
@@ -33,65 +34,58 @@ jobs:
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
 
-    - name: 更新 Feeds 并修复 Golang 链接
+    - name: 更新 Feeds
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
         
-        # 1. 注入源 (置顶高优先级)
+        # 注入源
         sed -i '1i src-git lucky https://github.com/gdy666/luci-app-lucky.git' ./feeds.conf.default
         sed -i '1i src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git' ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
-        
-        # 2. 【关键修正】确保 golang 核心包被安装且不被删除
-        ./scripts/feeds install -p packages golang
-        ./scripts/feeds install -a
-        
-        # 3. 精准清理可能冲突的插件目录（仅限插件，不动编译器）
-        rm -rf feeds/packages/net/frpc feeds/packages/net/frps feeds/packages/net/netbird
-        
         ./scripts/feeds install -a
 
-    - name: 固件配置 (三重锁定)
+    - name: 固件配置 (强制锁定)
       run: |
         cd openwrt
-        # 基础架构
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # --- 第一遍配置：激活 Go 环境 ---
-        echo "CONFIG_PACKAGE_golang=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
-        make defconfig
-
-        # --- 第二遍配置：暴力注入插件 ---
-        # 这里的名字必须和 feeds 里的 Makefile 定义完全一致
-        for plugin in netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc pv iftop iperf3; do
-          sed -i "s/# CONFIG_PACKAGE_$plugin is not set/CONFIG_PACKAGE_$plugin=y/g" .config
+        # 选中必要包
+        for plugin in golang netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc kmod-tun ca-bundle; do
           echo "CONFIG_PACKAGE_$plugin=y" >> .config
         done
-        
-        # 补齐 TurboACC 界面显示的依赖
-        echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
-        echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
 
-        # --- 第三遍确认 ---
         make defconfig
-        make download -j16
+
+    - name: 【核心补丁】劫持 Go 工具链
+      run: |
+        cd openwrt
+        # 创建 staging 目录（如果还没生成）
+        mkdir -p staging_dir/hostpkg/bin
+        # 获取当前系统安装的 Go 1.25 路径
+        GO_RUNTIME=$(which go)
+        echo "使用系统 Go 路径: $GO_RUNTIME"
+        $GO_RUNTIME version
+        
+        # 强行用软链接替换 OpenWrt 内部的 Go，欺骗 Makefile
+        ln -sf $GO_RUNTIME staging_dir/hostpkg/bin/go
+        
+        # 修改 Netbird 的 Makefile，强制它不要下载自己的 Go，而是使用系统 Go
+        find feeds/netbird_custom -name "Makefile" -exec sed -i 's/GO_VERSION_DEPENDS:=/GO_VERSION_DEPENDS:=1.25/g' {} + || true
 
     - name: 编译
       run: |
         cd openwrt
-        echo "--- 检查核心组件锁定状态 ---"
-        grep -E "CONFIG_PACKAGE_(golang|netbird|luci-app-lucky|luci-app-turboacc)" .config || true
-        # 即使报错也要看一眼是什么错，不直接 exit 1
-        make -j$(nproc) || make -j1 V=s
+        # 再次确认 Go 版本
+        ./staging_dir/hostpkg/bin/go version
+        make -j$(nproc) || make -j1 V=s || exit 1
 
-    - name: 整理并发布
+    - name: 整理发布
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
@@ -102,7 +96,7 @@ jobs:
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: "Build-V39-Final"
-        release_name: "ImmortalWrt-V39-Success"
+        tag: "Build-V40-GoHijack"
+        release_name: "ImmortalWrt-V40-Go1.25-Fixed"
         overwrite: true
         file_glob: true
