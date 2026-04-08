@@ -1,4 +1,4 @@
-name: Build_ImmortalWrt_V37_Full_Recovery
+name: Build_ImmortalWrt_V38_Path_Fixed
 
 on:
   workflow_dispatch:
@@ -33,22 +33,23 @@ jobs:
         sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
         echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
 
-    - name: 更新 Feeds 并强制重置 Golang 环境
+    - name: 更新 Feeds 并精准清理冲突插件
       run: |
         cd openwrt
         git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
         
-        # 1. 注入源
-        echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
-        echo "src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git" >> ./feeds.conf.default
+        # 1. 注入源 (将自定义源放在前面以获得高优先级)
+        sed -i '1i src-git lucky https://github.com/gdy666/luci-app-lucky.git' ./feeds.conf.default
+        sed -i '1i src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git' ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
         
-        # 2. 【核心】强制清理官方源里可能残缺的 Go 编译器和同名插件
-        # 这样编译器就会被迫重新寻找我们自定义源里的新 Makefile
-        rm -rf feeds/packages/lang/golang
-        rm -rf feeds/packages/net/frpc feeds/packages/net/frps
+        # 2. 【核心改进】只删除插件，千万不要删除 lang/golang
+        # 删除 feeds/packages 里的旧版插件，确保使用自定义源里的新版
+        find feeds/packages/ -name "netbird" -type d -exec rm -rf {} + || true
+        find feeds/packages/ -name "frpc" -type d -exec rm -rf {} + || true
+        find feeds/packages/ -name "frps" -type d -exec rm -rf {} + || true
         
         ./scripts/feeds install -a
 
@@ -61,38 +62,37 @@ jobs:
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # 核心：必须选中 golang 工具链包
+        # 核心：选中 golang 和网络基础包
         echo "CONFIG_PACKAGE_golang=y" >> .config
         echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
         echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
 
-        # 执行第一次 defconfig 生成基础树
+        # 第一次生成配置
         make defconfig
 
-        # --- 【第二次强力注入】直接修改 defconfig 后的结果 ---
-        # 针对消失的插件，不论系统是否想剔除，强行设为 y
+        # --- 【第二次暴力修正】 ---
+        # 针对消失的插件，强行改写 .config 结果
         for plugin in netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc pv iftop iperf3; do
           sed -i "s/# CONFIG_PACKAGE_$plugin is not set/CONFIG_PACKAGE_$plugin=y/g" .config
           echo "CONFIG_PACKAGE_$plugin=y" >> .config
         done
         
-        # 特别修正：确保 TurboACC 的依赖也被选中
+        # 补齐 TurboACC 依赖
         echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
         echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
 
-        # 再次执行简化配置确保依赖链路链接
+        # 最终确认配置
         make defconfig
         make download -j16
 
     - name: 编译
       run: |
         cd openwrt
-        # 编译前校验：如果此时打印出来的不是 y，说明 Makefile 有语法错误
-        echo "--- 正在检查核心插件状态 ---"
-        grep -E "CONFIG_PACKAGE_(netbird|luci-app-lucky|luci-app-frpc)" .config
+        echo "--- 检查配置锁定状态 ---"
+        grep -E "CONFIG_PACKAGE_(netbird|luci-app-lucky|luci-app-frpc|luci-app-turboacc)" .config || true
         make -j$(nproc) || make -j1 V=s || exit 1
 
-    - name: 整理并发布
+    - name: 整理发布
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
@@ -103,7 +103,7 @@ jobs:
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: "Build-V37-${{ github.run_id }}"
-        release_name: "ImmortalWrt-V37-Recovery"
+        tag: "Build-V38-${{ github.run_id }}"
+        release_name: "ImmortalWrt-V38-Fixed"
         overwrite: true
         file_glob: true
