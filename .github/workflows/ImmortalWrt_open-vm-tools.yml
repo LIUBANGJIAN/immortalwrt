@@ -1,91 +1,73 @@
-name: Build_ImmortalWrt_V40_Go1.25_Hijack
+name: Build_ImmortalWrt_V41_Stability_First
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: '编译分支'
-        required: true
-        default: 'openwrt-24.10'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-
     steps:
     - name: Checkout
       uses: actions/checkout@v5
 
-    # 1. 安装真正的 Go 1.25 (使用官方最新 main/rc 分支以满足 1.25.5 要求)
-    - name: Setup Go 1.25
+    - name: Setup Go 1.23
       uses: actions/setup-go@v5
       with:
-        go-version: '>=1.25.0-rc.1' 
+        go-version: '1.23.x'
 
-    - name: 极限空间清理
+    - name: 极限清理空间
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm /etc/mysql /etc/php /var/lib/mongodb /usr/share/kotlinc /usr/local/share/edge_driver /usr/local/share/gecko_driver /opt/microsoft/powershell /opt/pipx /usr/share/azure-cli /opt/az /usr/lib/google-cloud-sdk
         sudo docker image prune -a -f
-        sudo mkdir -p /mnt/openwrt_work /mnt/go_cache
-        sudo chown $USER:$USER /mnt/openwrt_work /mnt/go_cache
         mkdir -p $(pwd)/openwrt
-        sudo mount --bind /mnt/openwrt_work $(pwd)/openwrt
-        echo "GOCACHE=/mnt/go_cache" >> $GITHUB_ENV
 
-    - name: 更新 Feeds
+    - name: 更新 Feeds (使用更稳定的插件源)
       run: |
         cd openwrt
-        git clone https://github.com/immortalwrt/immortalwrt . -b ${{ github.event.inputs.branch }}
+        git clone https://github.com/immortalwrt/immortalwrt . -b openwrt-24.10
         
-        # 注入源
-        sed -i '1i src-git lucky https://github.com/gdy666/luci-app-lucky.git' ./feeds.conf.default
-        sed -i '1i src-git netbird_custom https://github.com/tbc0309/openwrt-netbird.git' ./feeds.conf.default
+        # 换用更加兼容 24.10 分支的源
+        echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> ./feeds.conf.default
         echo "src-git small https://github.com/kenzok8/small.git" >> ./feeds.conf.default
         
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: 固件配置 (强制锁定)
+    - name: 固件配置 (解决插件消失的关键)
       run: |
         cd openwrt
+        # 1. 基础硬件定义
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
 
-        # 选中必要包
-        for plugin in golang netbird luci-app-lucky luci-app-frps luci-app-frpc luci-app-turboacc kmod-tun ca-bundle; do
-          echo "CONFIG_PACKAGE_$plugin=y" >> .config
+        # 2. 强制开启 Go 编译器 (这是 lucky/frp 存在的基础)
+        echo "CONFIG_PACKAGE_golang=y" >> .config
+        
+        # 3. 插件注入 (移除那个报错的 netbird，先确保其他能编译通过)
+        for app in luci-app-lucky luci-app-frpc luci-app-frps luci-app-turboacc \
+        luci-app-passwall luci-app-ttyd luci-app-netdata; do
+          echo "CONFIG_PACKAGE_$app=y" >> .config
         done
 
-        make defconfig
+        # 4. 补全 TurboACC 的内核依赖 (没有这些，TurboACC 界面就不会出来)
+        echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
 
-    - name: 【核心补丁】劫持 Go 工具链
-      run: |
-        cd openwrt
-        # 创建 staging 目录（如果还没生成）
-        mkdir -p staging_dir/hostpkg/bin
-        # 获取当前系统安装的 Go 1.25 路径
-        GO_RUNTIME=$(which go)
-        echo "使用系统 Go 路径: $GO_RUNTIME"
-        $GO_RUNTIME version
+        make defconfig
         
-        # 强行用软链接替换 OpenWrt 内部的 Go，欺骗 Makefile
-        ln -sf $GO_RUNTIME staging_dir/hostpkg/bin/go
+        # 5. 【防止被删】再次强行把 n 改回 y
+        sed -i 's/is not set/=y/g' .config 2>/dev/null || true
         
-        # 修改 Netbird 的 Makefile，强制它不要下载自己的 Go，而是使用系统 Go
-        find feeds/netbird_custom -name "Makefile" -exec sed -i 's/GO_VERSION_DEPENDS:=/GO_VERSION_DEPENDS:=1.25/g' {} + || true
+        make download -j16
 
     - name: 编译
       run: |
         cd openwrt
-        # 再次确认 Go 版本
-        ./staging_dir/hostpkg/bin/go version
-        make -j$(nproc) || make -j1 V=s || exit 1
+        # 只要编译不成功，立刻停止并输出最后 50 行报错
+        make -j$(nproc) || (make -j1 V=s | tail -n 50 && exit 1)
 
-    - name: 整理发布
+    - name: 整理并发布
       run: |
         cd openwrt
         mkdir -p /tmp/upload/
@@ -96,7 +78,6 @@ jobs:
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: /tmp/upload/*
-        tag: "Build-V40-GoHijack"
-        release_name: "ImmortalWrt-V40-Go1.25-Fixed"
+        tag: "Build-V41-Stable"
+        release_name: "ImmortalWrt-V41-稳定版"
         overwrite: true
-        file_glob: true
