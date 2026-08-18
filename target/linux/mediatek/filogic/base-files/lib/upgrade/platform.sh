@@ -24,6 +24,27 @@ buffalo_initial_setup()
 	ubiformat /dev/mtd$mtdnum -y
 }
 
+jiorouter_initial_setup()
+{
+	[ "$(rootfs_type)" = "tmpfs" ] || return 0
+
+	local mtdnum="$( find_mtd_index ubi )"
+	if [ ! "$mtdnum" ]; then
+		echo "unable to find mtd partition ubi"
+		return 1
+	fi
+
+	ubidetach -m "$mtdnum" 2>/dev/null
+	ubiformat /dev/mtd$mtdnum -y
+	ubiattach -m "$mtdnum"
+	ubimkvol /dev/ubi0 -n 0 -N u-boot-env -s 0x80000
+
+	# Set boot arguments in freshly created U-Boot environment
+	fw_setenv bootcmd 'ubi read 46000000 kernel;fdt addr $(fdtcontroladdr);fdt rm /signature;bootm 0x46000000'
+	fw_setenv bootdelay 0
+	fw_setenv ipaddr ''
+}
+
 xiaomi_initial_setup()
 {
 	# initialize UBI and setup uboot-env if it's running on initramfs
@@ -74,6 +95,41 @@ xiaomi_initial_setup()
 	esac
 }
 
+update_oem_ubi_volume() {
+	local oem_volume_name="$1"
+	local oem_volume_part="${2:-$CI_UBIPART}"
+	local oem_volume_size="$3"
+	local oem_volume_data="$4"
+	local oem_ubivol
+	local mtdnum
+	local ubidev
+
+	mtdnum=$(find_mtd_index "$oem_volume_part")
+	if [ ! "$mtdnum" ]; then
+		return
+	fi
+
+	ubidev=$(nand_find_ubi "$oem_volume_part")
+	if [ ! "$ubidev" ]; then
+		ubiattach --mtdn="$mtdnum"
+		ubidev=$(nand_find_ubi "$oem_volume_part")
+	fi
+	[ "$ubidev" ] || return
+
+	oem_ubivol=$(nand_find_volume "$ubidev" "$oem_volume_name")
+	[ "$oem_ubivol" ] || return
+
+	ubirmvol "/dev/$ubidev" -N "$oem_volume_name"
+
+	# return if no new size specified
+	[ "$oem_volume_size" ] || return
+	ubimkvol "/dev/$ubidev" -N "$oem_volume_name" -s "$oem_volume_size"
+
+	# return if no new data specified
+	[ "$oem_volume_data" ] || return
+	ubiupdatevol "/dev/$ubidev" -s "$oem_volume_size" "$oem_volume_data"
+}
+
 platform_do_upgrade() {
 	local board=$(board_name)
 
@@ -92,7 +148,11 @@ platform_do_upgrade() {
 	cmcc,a10-ubootmod|\
 	cmcc,rax3000m|\
 	cmcc,rax3000me|\
+	comfast,cf-wr632ax-ubi|\
 	comfast,cf-wr632ax-ubootmod|\
+	creatlentem,clt-r30b1-ubi|\
+	cudy,m3000-v1-ubootmod|\
+	cudy,m3000-v2-yt8821-ubootmod|\
 	cudy,tr3000-v1-ubootmod|\
 	cudy,wbr3000uax-v1-ubootmod|\
 	cudy,wr3000e-v1-ubootmod|\
@@ -100,6 +160,7 @@ platform_do_upgrade() {
 	cudy,wr3000h-v1-ubootmod|\
 	cudy,wr3000p-v1-ubootmod|\
 	gatonetworks,gdsp|\
+	globitel,bt-r320|\
 	h3c,magic-nx30-pro|\
 	imou,hx21|\
 	jcg,q30-pro|\
@@ -109,6 +170,8 @@ platform_do_upgrade() {
 	mediatek,mt7981-rfb|\
 	mediatek,mt7988a-rfb|\
 	mercusys,mr90x-v1-ubi|\
+	netis,eap930-v1|\
+	netis,n6-v2|\
 	netis,nx30v2|\
 	netis,nx31|\
 	netis,nx32u|\
@@ -117,9 +180,12 @@ platform_do_upgrade() {
 	netcore,n60|\
 	netcore,n60-pro|\
 	qihoo,360t7|\
+	qihoo,360t7-ubi|\
 	routerich,ax3000-ubootmod|\
 	routerich,be7200|\
 	snr,snr-cpe-ax2|\
+	teralink,tl3020-256mb|\
+	tplink,be450-ubi|\
 	tplink,tl-7dr7230-v1|\
 	tplink,tl-7dr7230-v2|\
 	tplink,tl-7dr7250-v1|\
@@ -127,6 +193,7 @@ platform_do_upgrade() {
 	tplink,tl-xdr6086|\
 	tplink,tl-xdr6088|\
 	tplink,tl-xtr8488|\
+	wavlink,wl-wnt100x3-ubootmod|\
 	xiaomi,mi-router-ax3000t-ubootmod|\
 	xiaomi,redmi-router-ax6000-ubootmod|\
 	xiaomi,mi-router-wr30u-ubootmod|\
@@ -144,8 +211,9 @@ platform_do_upgrade() {
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
 	glinet,gl-xe3000|\
+	hiveton,h5000m|\
 	huasifei,wh3000-emmc|\
-	huasifei,wh3000-pro|\
+	huasifei,wh3000-pro-emmc|\
 	smartrg,sdg-8612|\
 	smartrg,sdg-8614|\
 	smartrg,sdg-8622|\
@@ -156,6 +224,33 @@ platform_do_upgrade() {
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
 		emmc_do_upgrade "$1"
+		;;
+	airtel,aap4221zy)
+		# ZyXEL zloader requires a "zyfwinfo" UBI volume with valid
+		# metadata (magic + checksum) to select the boot partition.
+		# Without it, zloader refuses to boot the firmware. It has to be
+		# written before nand_do_upgrade(), which sizes rootfs_data to
+		# fill the remaining space.
+		local ubidev="$(nand_attach_ubi "${CI_UBIPART:-ubi}")"
+		[ "$ubidev" ] || nand_do_upgrade_failed
+		local vol="$(nand_find_volume "$ubidev" zyfwinfo)"
+		if [ ! "$vol" ]; then
+			# rootfs_data may occupy all LEBs, nand_do_upgrade() recreates it
+			[ "$(nand_find_volume "$ubidev" rootfs_data)" ] && \
+				ubirmvol /dev/$ubidev -N rootfs_data
+			if ! ubimkvol /dev/$ubidev -N zyfwinfo -s 256 -t dynamic; then
+				echo "cannot create zyfwinfo volume"
+				nand_do_upgrade_failed
+			fi
+			vol="$(nand_find_volume "$ubidev" zyfwinfo)"
+		fi
+		local tmpfile="/tmp/zyfwinfo.bin"
+		echo -n -e '\x45\x58\x59\x5A\x02\x00\xB3\x15\x00\x01\x00\x00' > "$tmpfile"
+		dd if=/dev/zero bs=1 count=242 >> "$tmpfile" 2>/dev/null
+		echo -n -e '\x1B\x02' >> "$tmpfile"
+		ubiupdatevol /dev/$vol -s 256 "$tmpfile"
+		rm -f "$tmpfile"
+		nand_do_upgrade "$1"
 		;;
 	asus,rt-ax52|\
 	asus,rt-ax57m|\
@@ -168,9 +263,21 @@ platform_do_upgrade() {
 		CI_KERNPART="linux"
 		nand_do_upgrade "$1"
 		;;
+	buffalo,wsr-3000ax4p|\
+	xiaomi,mi-router-ax3000t|\
+	xiaomi,mi-router-wr30u-stock|\
+	xiaomi,redmi-router-ax6000-stock)
+		CI_KERN_UBIPART="ubi_kernel"
+		CI_ROOT_UBIPART="ubi"
+		CI_DATA_UBIPART="ubi"
+		nand_do_upgrade "$1"
+		;;
 	buffalo,wsr-6000ax8|\
 	cudy,wr3000h-v1|\
-	cudy,wr3000p-v1)
+	cudy,wr3000p-v1|\
+	huasifei,wh3000-pro-nand|\
+	huasifei,wh3000r-nand|\
+	jiorouter,ax6000-jidu6101)
 		CI_UBIPART="ubi"
 		nand_do_upgrade "$1"
 		;;
@@ -183,12 +290,15 @@ platform_do_upgrade() {
 	yuncore,ax835)
 		default_do_upgrade "$1"
 		;;
+	dlink,aquila-pro-ai-e30-a1|\
 	dlink,aquila-pro-ai-m30-a1|\
 	dlink,aquila-pro-ai-m60-a1)
 		fw_setenv sw_tryactive 0
 		nand_do_upgrade "$1"
 		;;
-	elecom,wrc-x3000gs3)
+	elecom,wrc-x3000gs3|\
+	elecom,wrc-x6000gsd|\
+	elecom,wrc-x6000qs)
 		local bootnum="$(mstc_rw_bootnum)"
 		case "$bootnum" in
 		1|2)
@@ -224,7 +334,8 @@ platform_do_upgrade() {
 		nand_do_flash_file "$1" || nand_do_upgrade_failed
 		nand_do_upgrade_success
 		;;
-	tplink,fr365-v1)
+	tplink,fr365-v1|\
+	zbtlink,zbt-z8803be)
 		CI_UBIPART="ubi"
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
@@ -262,13 +373,6 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
-	xiaomi,mi-router-ax3000t|\
-	xiaomi,mi-router-wr30u-stock|\
-	xiaomi,redmi-router-ax6000-stock)
-		CI_KERN_UBIPART=ubi_kernel
-		CI_ROOT_UBIPART=ubi
-		nand_do_upgrade "$1"
-		;;
 	*)
 		nand_do_upgrade "$1"
 		;;
@@ -297,7 +401,11 @@ platform_check_image() {
 	cmcc,a10-ubootmod|\
 	cmcc,rax3000m|\
 	cmcc,rax3000me|\
+	comfast,cf-wr632ax-ubi|\
 	comfast,cf-wr632ax-ubootmod|\
+	creatlentem,clt-r30b1-ubi|\
+	cudy,m3000-v1-ubootmod|\
+	cudy,m3000-v2-yt8821-ubootmod|\
 	cudy,tr3000-v1-ubootmod|\
 	cudy,wbr3000uax-v1-ubootmod|\
 	cudy,wr3000e-v1-ubootmod|\
@@ -305,6 +413,7 @@ platform_check_image() {
 	cudy,wr3000h-v1-ubootmod|\
 	cudy,wr3000p-v1-ubootmod|\
 	gatonetworks,gdsp|\
+	globitel,bt-r320|\
 	h3c,magic-nx30-pro|\
 	imou,lc-hx3001|\
 	jcg,q30-pro|\
@@ -315,12 +424,17 @@ platform_check_image() {
 	mediatek,mt7988a-rfb|\
 	mercusys,mr90x-v1-ubi|\
 	nokia,ea0326gmp|\
+	netis,eap930-v1|\
+	netis,n6-v2|\
 	netis,nx32u|\
 	openwrt,one|\
 	netcore,n60|\
 	netcore,n60-pro|\
 	qihoo,360t7|\
+	qihoo,360t7-ubi|\
 	routerich,ax3000-ubootmod|\
+	teralink,tl3020-256mb|\
+	tplink,be450-ubi|\
 	tplink,tl-7dr7230-v1|\
 	tplink,tl-7dr7230-v2|\
 	tplink,tl-7dr7250-v1|\
@@ -328,6 +442,7 @@ platform_check_image() {
 	tplink,tl-xdr6086|\
 	tplink,tl-xdr6088|\
 	tplink,tl-xtr8488|\
+	wavlink,wl-wnt100x3-ubootmod|\
 	xiaomi,mi-router-ax3000t-ubootmod|\
 	xiaomi,redmi-router-ax6000-ubootmod|\
 	xiaomi,mi-router-wr30u-ubootmod|\
@@ -337,6 +452,7 @@ platform_check_image() {
 		;;
 	creatlentem,clt-r30b1|\
 	creatlentem,clt-r30b1-112m|\
+	hiveton,h5000m|\
 	nradio,c8-668gl)
 		# tar magic `ustar`
 		magic="$(dd if="$1" bs=1 skip=257 count=5 2>/dev/null)"
@@ -369,8 +485,10 @@ platform_copy_config() {
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
 	glinet,gl-xe3000|\
+	globitel,bt-r320|\
+	hiveton,h5000m|\
 	huasifei,wh3000-emmc|\
-	huasifei,wh3000-pro|\
+	huasifei,wh3000-pro-emmc|\
 	jdcloud,re-cp-03|\
 	nradio,c8-668gl|\
 	smartrg,sdg-8612|\
@@ -413,8 +531,23 @@ platform_pre_upgrade() {
 	asus,zenwifi-bt8)
 		asus_initial_setup
 		;;
+	buffalo,wsr-3000ax4p)
+		update_oem_ubi_volume "rootfs"      "ubi_kernel" "4"
+		update_oem_ubi_volume "rootfs_data" "ubi_kernel"
+		update_oem_ubi_volume "dpi"         "ubi"
+		;;
 	buffalo,wsr-6000ax8)
 		buffalo_initial_setup
+		;;
+	elecom,wrc-x6000gsd|\
+	elecom,wrc-x6000qs)
+		local delay=$(fw_printenv -n bootmenu_delay)
+
+		[ -z "$delay" ] || [ "$delay" -eq "0" ] && \
+			fw_setenv bootmenu_delay 3
+		;;
+	jiorouter,ax6000-jidu6101)
+		jiorouter_initial_setup
 		;;
 	xiaomi,mi-router-ax3000t|\
 	xiaomi,mi-router-wr30u-stock|\
